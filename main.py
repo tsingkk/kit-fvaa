@@ -1,5 +1,8 @@
 import ttkbootstrap as ttk
-from tkinter import filedialog, messagebox
+import tkinter as tk
+from tkinter import filedialog, messagebox, Toplevel, Text, Scrollbar
+from tkhtmlview import HTMLLabel
+import markdown
 import os
 from core import VersionControl
 import threading
@@ -9,14 +12,15 @@ class VersionControlApp:
     def __init__(self, root):
         self.root = root
         self.root.title("文件版本管理工具")
-        self.root.geometry("1000x700")
+        self.root.geometry("1050x700")
+        self.root.minsize(1050, 700)
         
         self.vc = None
         self.work_dir = ""
         self.monitoring = False
         
         # 标题
-        title_label = ttk.Label(root, text="文件版本管理工具", font=("微软雅黑", 20, "bold"), bootstyle="info")
+        title_label = ttk.Label(root, text="Kit文件存档助手", font=("微软雅黑", 20, "bold"), bootstyle="info")
         title_label.pack(pady=10)
         
         # 工作目录选择
@@ -38,21 +42,21 @@ class VersionControlApp:
         self.monitor_btn = ttk.Button(btn_frame, text="开始监视", command=self.toggle_monitor, bootstyle="secondary")
         self.monitor_btn.pack(side="left", padx=5)
         
-        ttk.Label(btn_frame, text="存档说明:").pack(side="left", padx=5)
-        self.desc_entry = ttk.Entry(btn_frame, width=30)
-        self.desc_entry.pack(side="left", padx=5)
+        self.archive_desc = ""
+        self.desc_btn = ttk.Button(btn_frame, text="编辑存档说明", command=self.show_archive_input, bootstyle="secondary", width=12)
+        self.desc_btn.pack(side="left", padx=2)
         
-        self.archive_btn = ttk.Button(btn_frame, text="一键存档", command=self.create_archive, bootstyle="success")
-        self.archive_btn.pack(side="left", padx=5)
+        self.archive_btn = ttk.Button(btn_frame, text="一键存档", command=self.create_archive, bootstyle="success", width=8)
+        self.archive_btn.pack(side="left", padx=2)
         
-        self.restore_btn = ttk.Button(btn_frame, text="恢复选中版本", command=self.restore_version, bootstyle="warning")
-        self.restore_btn.pack(side="left", padx=5)
+        self.restore_btn = ttk.Button(btn_frame, text="恢复版本", command=self.restore_version, bootstyle="warning", width=8)
+        self.restore_btn.pack(side="left", padx=2)
         
-        ttk.Label(btn_frame, text="添加标签:").pack(side="left", padx=5)
-        self.tag_entry = ttk.Entry(btn_frame, width=15)
-        self.tag_entry.pack(side="left", padx=5)
-        self.tag_btn = ttk.Button(btn_frame, text="添加标签", command=self.add_tag, bootstyle="info")
-        self.tag_btn.pack(side="left", padx=5)
+        ttk.Label(btn_frame, text="标签:").pack(side="left", padx=2)
+        self.tag_entry = ttk.Entry(btn_frame, width=10)
+        self.tag_entry.pack(side="left", padx=2)
+        self.tag_btn = ttk.Button(btn_frame, text="添加标签", command=self.add_tag, bootstyle="info", width=8)
+        self.tag_btn.pack(side="left", padx=2)
         
         # 消息提示
         self.msg_label = ttk.Label(root, text="", bootstyle="warning")
@@ -66,9 +70,17 @@ class VersionControlApp:
         paned = ttk.Panedwindow(root, orient="horizontal")
         paned.pack(pady=10, fill="both", expand=True, padx=10)
         
+        # 操作历史面板
+        op_frame = ttk.Frame(paned)
+        paned.add(op_frame, weight=2)
+        
+        ttk.Label(op_frame, text="操作历史", font=("微软雅黑", 14, "bold")).pack(pady=5)
+        self.op_list = tk.Listbox(op_frame, font=("微软雅黑", 11), bg="#3c3f41", fg="#f0f0f0", selectbackground="#4682b4")
+        self.op_list.pack(fill="both", expand=True)
+        
         # 文件状态面板
         status_frame = ttk.Frame(paned)
-        paned.add(status_frame, weight=6)
+        paned.add(status_frame, weight=5)
         
         ttk.Label(status_frame, text="文件状态", font=("微软雅黑", 14, "bold")).pack(pady=5)
         self.status_tree = ttk.Treeview(status_frame, columns=("status", "path"), show="headings", height=25, bootstyle="dark")
@@ -90,9 +102,10 @@ class VersionControlApp:
         self.version_tree.heading("tags", text="标签", anchor="center")
         self.version_tree.column("version", width=60, anchor="center")
         self.version_tree.column("time", width=150, anchor="center")
-        self.version_tree.column("desc", width=140)
+        self.version_tree.column("desc", width=140, anchor="center")
         self.version_tree.column("tags", width=80, anchor="center")
         self.version_tree.pack(fill="both", expand=True)
+        self.version_tree.bind('<ButtonRelease-1>', self.show_version_desc)
         
         self.status_tags = {
             'modified': ('修改', '#ffc107'),
@@ -103,6 +116,64 @@ class VersionControlApp:
         for tag, (_, color) in self.status_tags.items():
             self.status_tree.tag_configure(tag, foreground=color)
     
+    def show_archive_input(self):
+        """弹出存档说明编辑窗口"""
+        win = Toplevel(self.root)
+        win.title("编辑存档说明")
+        win.geometry("600x400")
+        win.transient(self.root)
+        
+        text = Text(win, wrap=tk.WORD, font=("微软雅黑", 12))
+        scroll = Scrollbar(win, command=text.yview)
+        text.configure(yscrollcommand=scroll.set)
+        text.insert("end", self.archive_desc)
+        
+        text.pack(side="left", fill="both", expand=True, padx=5, pady=5)
+        scroll.pack(side="right", fill="y", pady=5)
+        
+        btn_frame = ttk.Frame(win)
+        btn_frame.pack(fill="x", pady=5, padx=5)
+        
+        def save_desc():
+            self.archive_desc = text.get("1.0", "end-1c")
+            win.destroy()
+            self.msg_label.config(text="存档说明已保存")
+        
+        def cancel():
+            win.destroy()
+        
+        def on_close():
+            if messagebox.askyesno("保存确认", "是否保存当前编辑的存档说明？"):
+                save_desc()
+            else:
+                cancel()
+        
+        ttk.Button(btn_frame, text="保存", command=save_desc, bootstyle="primary", width=10).pack(side="right", padx=5)
+        ttk.Button(btn_frame, text="取消", command=cancel, bootstyle="secondary", width=10).pack(side="right", padx=5)
+        win.protocol("WM_DELETE_WINDOW", on_close)
+    
+    def show_version_desc(self, event):
+        """点击版本查看说明"""
+        item = self.version_tree.identify_row(event.y)
+        if not item:
+            return
+        col = self.version_tree.identify_column(event.x)
+        if col != "#3": # 仅点击说明列才触发
+            return
+        version_data = self.version_tree.item(item)
+        desc = version_data['tags'][0] if version_data['tags'] else "无说明"
+        
+        win = Toplevel(self.root)
+        win.title(f"版本 {version_data['values'][0]} 存档说明")
+        win.geometry("600x400")
+        win.transient(self.root)
+        
+        # 渲染markdown格式
+        html = markdown.markdown(desc, extensions=['tables', 'fenced_code', 'nl2br'])
+        html_view = HTMLLabel(win, html=html)
+        html_view.fit_height()
+        html_view.pack(fill="both", expand=True, padx=5, pady=5)
+
     def select_dir(self):
         dir_path = filedialog.askdirectory()
         if dir_path:
@@ -110,8 +181,19 @@ class VersionControlApp:
             self.dir_entry.delete(0, "end")
             self.dir_entry.insert(0, dir_path)
             self.vc = VersionControl(dir_path)
+            self.archive_desc = ""
             self.refresh_status()
             self.refresh_versions()
+            self.refresh_operation_log()
+
+    def refresh_operation_log(self):
+        """刷新操作历史列表"""
+        if not self.vc:
+            return
+        self.op_list.delete(0, "end")
+        logs = self.vc.get_operation_log()
+        for log in logs:
+            self.op_list.insert("end", f"{log['time']} {log['op']}")
     
     def refresh_status(self):
         if not self.vc:
@@ -137,19 +219,22 @@ class VersionControlApp:
         versions = self.vc.get_versions()
         for v in versions:
             tags = ','.join(v.get('tags', []))
-            self.version_tree.insert("", "end", values=(v['version'], v['time'], v['description'] or '无说明', tags))
+            desc = v['description'] or "无说明"
+            show_desc = "点击查看" if desc.strip() else "无说明"
+            self.version_tree.insert("", "end", values=(v['version'], v['time'], show_desc, tags), tags=(desc,))
     
     def create_archive(self):
         if not self.vc:
             self.msg_label.config(text="请先选择工作目录")
             return
-        desc = self.desc_entry.get()
+        desc = self.archive_desc
         version, msg = self.vc.create_archive(desc)
         self.msg_label.config(text=msg)
         if version:
             self.refresh_versions()
             self.refresh_status()
-            self.desc_entry.delete(0, "end")
+            self.refresh_operation_log()
+            self.archive_desc = ""
     
     def restore_version(self):
         if not self.vc:
@@ -165,6 +250,7 @@ class VersionControlApp:
             success, msg = self.vc.restore_version(version_num)
             self.msg_label.config(text=msg)
             self.refresh_status()
+            self.refresh_operation_log()
     
     def add_tag(self):
         if not self.vc:
@@ -202,6 +288,6 @@ class VersionControlApp:
             self.monitor_btn.config(text="开始监视")
 
 if __name__ == "__main__":
-    app = ttk.Window(themename="cyborg", title="文件版本管理工具")
+    app = ttk.Window(themename="cyborg", title="Kit文件存档助手")
     VersionControlApp(app)
     app.mainloop()

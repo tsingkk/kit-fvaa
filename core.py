@@ -19,7 +19,7 @@ class VersionControl:
         os.makedirs(self.versions_dir, exist_ok=True)
         if not os.path.exists(self.manifest_path):
             with open(self.manifest_path, 'w', encoding='utf-8') as f:
-                json.dump({'versions': [], 'next_version': 1, 'tags': {}}, f, indent=2)
+                json.dump({'versions': [], 'next_version': 1, 'tags': {}, 'operation_log': []}, f, indent=2)
         if not os.path.exists(self.cache_path):
             with open(self.cache_path, 'w', encoding='utf-8') as f:
                 json.dump({}, f, indent=2)
@@ -102,7 +102,7 @@ class VersionControl:
         for path, info in current_files.items():
             dest = os.path.join(version_dir, path)
             os.makedirs(os.path.dirname(dest), exist_ok=True)
-            # 优先链接上一个版本的相同文件
+            # 仅在存档目录内部使用硬链接：优先链接上一个版本的相同文件
             linked = False
             if prev_version and path in prev_version['files'] and prev_version['files'][path]['hash'] == info['hash']:
                 try:
@@ -111,13 +111,10 @@ class VersionControl:
                     linked = True
                 except:
                     pass
-            # 链接失败则复制当前文件
+            # 存档和工作目录之间永远使用复制，禁止硬链接，避免修改当前文件影响存档
             if not linked:
                 src = os.path.join(self.work_dir, path)
-                try:
-                    os.link(src, dest)
-                except:
-                    shutil.copy2(src, dest)
+                shutil.copy2(src, dest)
 
         version_info = {
             'version': version,
@@ -135,7 +132,30 @@ class VersionControl:
         with open(self.cache_path, 'w', encoding='utf-8') as f:
             json.dump(current_files, f, indent=2)
         
+        # 记录操作历史
+        self.record_operation('archive', version)
+        
         return version_info, f"版本 {version} 存档成功，共 {total_changes} 个变更"
+
+    def record_operation(self, op_type, version):
+        """记录操作历史"""
+        with open(self.manifest_path, 'r', encoding='utf-8') as f:
+            manifest = json.load(f)
+        op_text = f"存档<版本{version}>" if op_type == 'archive' else f"恢复<版本{version}>"
+        log_item = {
+            'time': datetime.now().strftime('%Y-%m-%d %H:%M'),
+            'op': op_text
+        }
+        # 最新操作插入到最前面
+        manifest['operation_log'].insert(0, log_item)
+        with open(self.manifest_path, 'w', encoding='utf-8') as f:
+            json.dump(manifest, f, indent=2, ensure_ascii=False)
+    
+    def get_operation_log(self):
+        """获取操作历史"""
+        with open(self.manifest_path, 'r', encoding='utf-8') as f:
+            manifest = json.load(f)
+        return manifest.get('operation_log', [])
 
     def add_tag(self, version, tag_name):
         """给指定版本添加标签"""
@@ -171,19 +191,40 @@ class VersionControl:
             return False, "版本不存在"
         
         version_dir = os.path.join(self.versions_dir, str(version))
-        for root, _, filenames in os.walk(self.work_dir):
+        # 先删除当前所有非排除文件
+        deleted_count = 0
+        for root, _, filenames in os.walk(self.work_dir, topdown=False):
             for filename in filenames:
                 full_path = os.path.join(root, filename)
                 if not self._is_excluded(full_path):
-                    os.remove(full_path)
+                    try:
+                        os.remove(full_path)
+                        deleted_count +=1
+                    except:
+                        return False, f"删除文件失败：{full_path}，请关闭占用该文件的程序后重试"
+            # 删除空文件夹
+            try:
+                if not os.listdir(root) and not self._is_excluded(root):
+                    os.rmdir(root)
+            except:
+                pass
         
+        # 复制所有版本文件到工作目录
+        restored_count = 0
         for path in version_info['files']:
             src = os.path.join(version_dir, path)
             dest = os.path.join(self.work_dir, path)
             os.makedirs(os.path.dirname(dest), exist_ok=True)
-            shutil.copy2(src, dest)
+            try:
+                shutil.copy2(src, dest)
+                restored_count +=1
+            except Exception as e:
+                return False, f"恢复文件失败：{path}，错误：{str(e)}"
         
         with open(self.cache_path, 'w', encoding='utf-8') as f:
             json.dump(version_info['files'], f, indent=2)
         
-        return True, f"版本 {version} 恢复成功"
+        # 记录操作历史
+        self.record_operation('restore', version)
+        
+        return True, f"版本 {version} 恢复成功，共恢复 {restored_count} 个文件"
