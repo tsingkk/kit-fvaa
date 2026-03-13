@@ -59,6 +59,12 @@ class VersionControlApp:
         self.restore_btn = ttk.Button(btn_frame, text="恢复选中版本", command=self.restore_version)
         self.restore_btn.pack(side=tk.LEFT, padx=5)
         
+        ttk.Label(btn_frame, text="添加标签:").pack(side=tk.LEFT, padx=5)
+        self.tag_entry = ttk.Entry(btn_frame, width=15)
+        self.tag_entry.pack(side=tk.LEFT, padx=5)
+        self.tag_btn = ttk.Button(btn_frame, text="添加标签", command=self.add_tag)
+        self.tag_btn.pack(side=tk.LEFT, padx=5)
+        
         # 消息提示
         self.msg_label = ttk.Label(root, text="", foreground="#ffff64")
         self.msg_label.pack(pady=2, fill=tk.X, padx=10)
@@ -88,13 +94,15 @@ class VersionControlApp:
         paned.add(version_frame, weight=4)
         
         ttk.Label(version_frame, text="版本历史", font=("微软雅黑", 14, "bold")).pack(pady=5)
-        self.version_tree = ttk.Treeview(version_frame, columns=("version", "time", "desc"), show="headings", height=25)
+        self.version_tree = ttk.Treeview(version_frame, columns=("version", "time", "desc", "tags"), show="headings", height=25)
         self.version_tree.heading("version", text="版本号")
         self.version_tree.heading("time", text="时间")
         self.version_tree.heading("desc", text="说明")
+        self.version_tree.heading("tags", text="标签")
         self.version_tree.column("version", width=60)
         self.version_tree.column("time", width=150)
-        self.version_tree.column("desc", width=200)
+        self.version_tree.column("desc", width=140)
+        self.version_tree.column("tags", width=80)
         self.version_tree.pack(fill=tk.BOTH, expand=True)
         
         self.status_tags = {
@@ -139,7 +147,27 @@ class VersionControlApp:
         
         versions = self.vc.get_versions()
         for v in versions:
-            self.version_tree.insert("", tk.END, values=(v['version'], v['time'], v['description'] or '无说明'))
+            tags = ','.join(v.get('tags', []))
+            self.version_tree.insert("", tk.END, values=(v['version'], v['time'], v['description'] or '无说明', tags))
+
+    def add_tag(self):
+        if not self.vc:
+            self.msg_label.config(text="请先选择工作目录")
+            return
+        selected = self.version_tree.selection()
+        if not selected:
+            self.msg_label.config(text="请先选择要打标签的版本")
+            return
+        tag_name = self.tag_entry.get().strip()
+        if not tag_name:
+            self.msg_label.config(text="请输入标签名称")
+            return
+        version_num = int(self.version_tree.item(selected[0])['values'][0])
+        success, msg = self.vc.add_tag(version_num, tag_name)
+        self.msg_label.config(text=msg)
+        if success:
+            self.refresh_versions()
+            self.tag_entry.delete(0, tk.END)
     
     def create_archive(self):
         if not self.vc:

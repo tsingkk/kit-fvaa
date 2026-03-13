@@ -19,7 +19,7 @@ class VersionControl:
         os.makedirs(self.versions_dir, exist_ok=True)
         if not os.path.exists(self.manifest_path):
             with open(self.manifest_path, 'w', encoding='utf-8') as f:
-                json.dump({'versions': [], 'next_version': 1}, f, indent=2)
+                json.dump({'versions': [], 'next_version': 1, 'tags': {}}, f, indent=2)
         if not os.path.exists(self.cache_path):
             with open(self.cache_path, 'w', encoding='utf-8') as f:
                 json.dump({}, f, indent=2)
@@ -97,24 +97,35 @@ class VersionControl:
         version_dir = os.path.join(self.versions_dir, str(version))
         os.makedirs(version_dir, exist_ok=True)
 
-        for path in current_files:
-            src = os.path.join(self.work_dir, path)
+        # 获取上一个版本，复用未修改文件的硬链接
+        prev_version = manifest['versions'][-1] if manifest['versions'] else None
+        for path, info in current_files.items():
             dest = os.path.join(version_dir, path)
             os.makedirs(os.path.dirname(dest), exist_ok=True)
-            try:
-                if os.name == 'nt':
-                    shutil.copy2(src, dest)
-                else:
+            # 优先链接上一个版本的相同文件
+            linked = False
+            if prev_version and path in prev_version['files'] and prev_version['files'][path]['hash'] == info['hash']:
+                try:
+                    prev_path = os.path.join(self.versions_dir, str(prev_version['version']), path)
+                    os.link(prev_path, dest)
+                    linked = True
+                except:
+                    pass
+            # 链接失败则复制当前文件
+            if not linked:
+                src = os.path.join(self.work_dir, path)
+                try:
                     os.link(src, dest)
-            except:
-                shutil.copy2(src, dest)
+                except:
+                    shutil.copy2(src, dest)
 
         version_info = {
             'version': version,
             'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'description': description,
             'diff': diff,
-            'files': current_files
+            'files': current_files,
+            'tags': []
         }
         manifest['versions'].append(version_info)
         manifest['next_version'] += 1
@@ -125,6 +136,27 @@ class VersionControl:
             json.dump(current_files, f, indent=2)
         
         return version_info, f"版本 {version} 存档成功，共 {total_changes} 个变更"
+
+    def add_tag(self, version, tag_name):
+        """给指定版本添加标签"""
+        with open(self.manifest_path, 'r', encoding='utf-8') as f:
+            manifest = json.load(f)
+        # 标签不能重复
+        if tag_name in manifest['tags']:
+            return False, "标签已存在"
+        # 查找对应版本
+        version_info = next((v for v in manifest['versions'] if v['version'] == version), None)
+        if not version_info:
+            return False, "版本不存在"
+        # 添加标签
+        manifest['tags'][tag_name] = version
+        if 'tags' not in version_info:
+            version_info['tags'] = []
+        version_info['tags'].append(tag_name)
+        # 保存
+        with open(self.manifest_path, 'w', encoding='utf-8') as f:
+            json.dump(manifest, f, indent=2, ensure_ascii=False)
+        return True, f"标签 {tag_name} 添加成功"
 
     def get_versions(self):
         with open(self.manifest_path, 'r', encoding='utf-8') as f:
