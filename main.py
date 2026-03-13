@@ -11,9 +11,28 @@ import time
 class VersionControlApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("文件版本管理工具")
-        self.root.geometry("1050x700")
-        self.root.minsize(1050, 700)
+        self.root.title("Kit文件存档助手")
+        self.root.geometry("1100x760")
+        self.root.minsize(1100, 760)
+        
+        # 自定义高亮滚动条样式
+        style = ttk.Style()
+        style.configure("Custom.Vertical.TScrollbar", 
+                        background="#e0e0e0", 
+                        troughcolor="#888888",
+                        bordercolor="#2b2b2b",
+                        arrowcolor="#ffffff",
+                        gripcount=0)
+        style.configure("Custom.Horizontal.TScrollbar", 
+                        background="#e0e0e0", 
+                        troughcolor="#888888",
+                        bordercolor="#2b2b2b",
+                        arrowcolor="#ffffff",
+                        gripcount=0)
+        style.map("Custom.Vertical.TScrollbar",
+                  background=[('active', '#f0f0f0'), ('pressed', '#cccccc')])
+        style.map("Custom.Horizontal.TScrollbar",
+                  background=[('active', '#f0f0f0'), ('pressed', '#cccccc')])
         
         self.vc = None
         self.work_dir = ""
@@ -75,36 +94,72 @@ class VersionControlApp:
         paned.add(op_frame, weight=2)
         
         ttk.Label(op_frame, text="操作历史", font=("微软雅黑", 14, "bold")).pack(pady=5)
-        self.op_list = tk.Listbox(op_frame, font=("微软雅黑", 11), bg="#3c3f41", fg="#f0f0f0", selectbackground="#4682b4")
-        self.op_list.pack(fill="both", expand=True)
+        op_inner_frame = ttk.Frame(op_frame)
+        op_inner_frame.pack(fill="both", expand=True)
+        # 先创建列表控件
+        self.op_list = tk.Listbox(op_inner_frame, font=("微软雅黑", 11), bg="#3c3f41", fg="#f0f0f0", selectbackground="#4682b4")
+        # 横向+竖向滚动条（高亮样式）
+        op_yscroll = ttk.Scrollbar(op_inner_frame, orient="vertical", command=self.op_list.yview, style="Custom.Vertical.TScrollbar")
+        op_xscroll = ttk.Scrollbar(op_inner_frame, orient="horizontal", command=self.op_list.xview, style="Custom.Horizontal.TScrollbar")
+        # 绑定滚动
+        self.op_list.configure(yscrollcommand=op_yscroll.set, xscrollcommand=op_xscroll.set)
+        self.op_list.grid(row=0, column=0, sticky="nsew")
+        op_yscroll.grid(row=0, column=1, sticky="ns")
+        op_xscroll.grid(row=1, column=0, sticky="ew")
+        op_inner_frame.grid_rowconfigure(0, weight=1)
+        op_inner_frame.grid_columnconfigure(0, weight=1)
         
         # 文件状态面板
         status_frame = ttk.Frame(paned)
-        paned.add(status_frame, weight=5)
+        paned.add(status_frame, weight=4)
         
         ttk.Label(status_frame, text="文件状态", font=("微软雅黑", 14, "bold")).pack(pady=5)
-        self.status_tree = ttk.Treeview(status_frame, columns=("status", "path"), show="headings", height=25, bootstyle="dark")
+        status_inner_frame = ttk.Frame(status_frame)
+        status_inner_frame.pack(fill="both", expand=True)
+        # 先创建树控件
+        self.status_tree = ttk.Treeview(status_inner_frame, columns=("status", "path"), show="headings", height=25, bootstyle="dark")
         self.status_tree.heading("status", text="状态")
         self.status_tree.heading("path", text="文件路径")
-        self.status_tree.column("status", width=80, anchor="center")
-        self.status_tree.column("path", width=500)
-        self.status_tree.pack(fill="both", expand=True)
+        self.status_tree.column("status", width=80, anchor="center", stretch=False)
+        self.status_tree.column("path", width=600, stretch=False)
+        # 横向+竖向滚动条（高亮样式）
+        status_yscroll = ttk.Scrollbar(status_inner_frame, orient="vertical", command=self.status_tree.yview, style="Custom.Vertical.TScrollbar")
+        status_xscroll = ttk.Scrollbar(status_inner_frame, orient="horizontal", command=self.status_tree.xview, style="Custom.Horizontal.TScrollbar")
+        # 绑定滚动
+        self.status_tree.configure(yscrollcommand=status_yscroll.set, xscrollcommand=status_xscroll.set)
+        self.status_tree.grid(row=0, column=0, sticky="nsew")
+        status_yscroll.grid(row=0, column=1, sticky="ns")
+        status_xscroll.grid(row=1, column=0, sticky="ew")
+        status_inner_frame.grid_rowconfigure(0, weight=1)
+        status_inner_frame.grid_columnconfigure(0, weight=1)
         
         # 版本历史面板
         version_frame = ttk.Frame(paned)
-        paned.add(version_frame, weight=4)
+        paned.add(version_frame, weight=5)
         
         ttk.Label(version_frame, text="版本历史", font=("微软雅黑", 14, "bold")).pack(pady=5)
-        self.version_tree = ttk.Treeview(version_frame, columns=("version", "time", "desc", "tags"), show="headings", height=25, bootstyle="dark")
+        version_inner_frame = ttk.Frame(version_frame)
+        version_inner_frame.pack(fill="both", expand=True)
+        # 先创建树控件
+        self.version_tree = ttk.Treeview(version_inner_frame, columns=("version", "time", "desc", "tags"), show="headings", height=25, bootstyle="dark")
         self.version_tree.heading("version", text="版本号", anchor="center")
         self.version_tree.heading("time", text="时间", anchor="center")
         self.version_tree.heading("desc", text="说明", anchor="center")
         self.version_tree.heading("tags", text="标签", anchor="center")
-        self.version_tree.column("version", width=60, anchor="center")
-        self.version_tree.column("time", width=150, anchor="center")
-        self.version_tree.column("desc", width=140, anchor="center")
-        self.version_tree.column("tags", width=80, anchor="center")
-        self.version_tree.pack(fill="both", expand=True)
+        self.version_tree.column("version", width=60, anchor="center", stretch=False)
+        self.version_tree.column("time", width=130, anchor="center", stretch=False)
+        self.version_tree.column("desc", width=120, anchor="center", stretch=False)
+        self.version_tree.column("tags", width=80, anchor="center", stretch=False)
+        # 横向+竖向滚动条（高亮样式）
+        version_yscroll = ttk.Scrollbar(version_inner_frame, orient="vertical", command=self.version_tree.yview, style="Custom.Vertical.TScrollbar")
+        version_xscroll = ttk.Scrollbar(version_inner_frame, orient="horizontal", command=self.version_tree.xview, style="Custom.Horizontal.TScrollbar")
+        # 绑定滚动
+        self.version_tree.configure(yscrollcommand=version_yscroll.set, xscrollcommand=version_xscroll.set)
+        self.version_tree.grid(row=0, column=0, sticky="nsew")
+        version_yscroll.grid(row=0, column=1, sticky="ns")
+        version_xscroll.grid(row=1, column=0, sticky="ew")
+        version_inner_frame.grid_rowconfigure(0, weight=1)
+        version_inner_frame.grid_columnconfigure(0, weight=1)
         self.version_tree.bind('<ButtonRelease-1>', self.show_version_desc)
         
         self.status_tags = {
@@ -192,8 +247,10 @@ class VersionControlApp:
             return
         self.op_list.delete(0, "end")
         logs = self.vc.get_operation_log()
-        for log in logs:
+        for idx, log in enumerate(logs):
+            tag = "archive" if "存档" in log['op'] else "restore"
             self.op_list.insert("end", f"{log['time']} {log['op']}")
+            self.op_list.itemconfig(idx, {'bg': '#2d5033' if tag == 'archive' else '#5a4a20'})
     
     def refresh_status(self):
         if not self.vc:
