@@ -34,6 +34,8 @@ ENV/
 *.tmp
 .DS_Store
 Thumbs.db
+somefortry/
+release/
 
 # IDE相关
 .vscode/

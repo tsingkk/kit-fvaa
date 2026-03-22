@@ -7,13 +7,17 @@ import os
 from core import VersionControl
 import threading
 import time
+import json
 
 class VersionControlApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Kit文件存档助手")
-        self.root.geometry("1100x760")
-        self.root.minsize(1100, 760)
+        self.root.geometry("1600x850")
+        self.root.minsize(1200, 760)
+        
+        self.config_file = "fvaa_config.json"
+        self.recent_dirs = self.load_recent_dirs()
         
         # 自定义高亮滚动条样式
         style = ttk.Style()
@@ -47,8 +51,10 @@ class VersionControlApp:
         dir_frame.pack(pady=5, fill="x", padx=10)
         
         ttk.Label(dir_frame, text="工作目录:").pack(side="left", padx=5)
-        self.dir_entry = ttk.Entry(dir_frame, width=80)
+        self.dir_entry = ttk.Combobox(dir_frame, width=80, values=self.recent_dirs)
         self.dir_entry.pack(side="left", padx=5, fill="x", expand=True)
+        self.dir_entry.bind("<<ComboboxSelected>>", self.on_combobox_select)
+        self.dir_entry.bind("<Return>", self.on_combobox_select)
         ttk.Button(dir_frame, text="选择目录", command=self.select_dir, bootstyle="primary").pack(side="left", padx=5)
         
         # 操作按钮栏
@@ -91,7 +97,7 @@ class VersionControlApp:
         
         # 操作历史面板
         op_frame = ttk.Frame(paned)
-        paned.add(op_frame, weight=2)
+        paned.add(op_frame, weight=3)
         
         ttk.Label(op_frame, text="操作历史", font=("微软雅黑", 14, "bold")).pack(pady=5)
         op_inner_frame = ttk.Frame(op_frame)
@@ -111,7 +117,7 @@ class VersionControlApp:
         
         # 文件状态面板
         status_frame = ttk.Frame(paned)
-        paned.add(status_frame, weight=4)
+        paned.add(status_frame, weight=8)
         
         ttk.Label(status_frame, text="文件状态", font=("微软雅黑", 14, "bold")).pack(pady=5)
         status_inner_frame = ttk.Frame(status_frame)
@@ -120,8 +126,8 @@ class VersionControlApp:
         self.status_tree = ttk.Treeview(status_inner_frame, columns=("status", "path"), show="headings", height=25, bootstyle="dark")
         self.status_tree.heading("status", text="状态")
         self.status_tree.heading("path", text="文件路径")
-        self.status_tree.column("status", width=80, anchor="center", stretch=False)
-        self.status_tree.column("path", width=600, stretch=False)
+        self.status_tree.column("status", width=60, anchor="center", stretch=False)
+        self.status_tree.column("path", width=500, stretch=True)
         # 横向+竖向滚动条（高亮样式）
         status_yscroll = ttk.Scrollbar(status_inner_frame, orient="vertical", command=self.status_tree.yview, style="Custom.Vertical.TScrollbar")
         status_xscroll = ttk.Scrollbar(status_inner_frame, orient="horizontal", command=self.status_tree.xview, style="Custom.Horizontal.TScrollbar")
@@ -135,7 +141,7 @@ class VersionControlApp:
         
         # 版本历史面板
         version_frame = ttk.Frame(paned)
-        paned.add(version_frame, weight=5)
+        paned.add(version_frame, weight=4)
         
         ttk.Label(version_frame, text="版本历史", font=("微软雅黑", 14, "bold")).pack(pady=5)
         version_inner_frame = ttk.Frame(version_frame)
@@ -147,9 +153,9 @@ class VersionControlApp:
         self.version_tree.heading("desc", text="说明", anchor="center")
         self.version_tree.heading("tags", text="标签", anchor="center")
         self.version_tree.column("version", width=60, anchor="center", stretch=False)
-        self.version_tree.column("time", width=130, anchor="center", stretch=False)
-        self.version_tree.column("desc", width=120, anchor="center", stretch=False)
-        self.version_tree.column("tags", width=80, anchor="center", stretch=False)
+        self.version_tree.column("time", width=160, anchor="center", stretch=False)
+        self.version_tree.column("desc", width=100, anchor="center", stretch=True)
+        self.version_tree.column("tags", width=100, anchor="center", stretch=True)
         # 横向+竖向滚动条（高亮样式）
         version_yscroll = ttk.Scrollbar(version_inner_frame, orient="vertical", command=self.version_tree.yview, style="Custom.Vertical.TScrollbar")
         version_xscroll = ttk.Scrollbar(version_inner_frame, orient="horizontal", command=self.version_tree.xview, style="Custom.Horizontal.TScrollbar")
@@ -175,19 +181,17 @@ class VersionControlApp:
         """弹出存档说明编辑窗口"""
         win = Toplevel(self.root)
         win.title("编辑存档说明")
-        win.geometry("600x400")
+        win.geometry("600x500")
         win.transient(self.root)
+        win.focus_set()
         
-        text = Text(win, wrap=tk.WORD, font=("微软雅黑", 12))
-        scroll = Scrollbar(win, command=text.yview)
-        text.configure(yscrollcommand=scroll.set)
-        text.insert("end", self.archive_desc)
-        
-        text.pack(side="left", fill="both", expand=True, padx=5, pady=5)
-        scroll.pack(side="right", fill="y", pady=5)
-        
+        # 顶部提示语
+        hint_label = ttk.Label(win, text="请记录当前目录中的文件修改情况，一键存档时将与存档版本绑定，方便后期查阅！", bootstyle="info", wraplength=550)
+        hint_label.pack(pady=(15, 5), padx=20, fill="x", side="top")
+
+        # 底部按钮栏 (先pack side="bottom" 确保即使窗口缩小也始终可见)
         btn_frame = ttk.Frame(win)
-        btn_frame.pack(fill="x", pady=5, padx=5)
+        btn_frame.pack(fill="x", side="bottom", pady=15, padx=20)
         
         def save_desc():
             self.archive_desc = text.get("1.0", "end-1c")
@@ -198,14 +202,28 @@ class VersionControlApp:
             win.destroy()
         
         def on_close():
+            # 仅在点击右上角关闭(X)时提醒
             if messagebox.askyesno("保存确认", "是否保存当前编辑的存档说明？"):
                 save_desc()
             else:
                 cancel()
-        
-        ttk.Button(btn_frame, text="保存", command=save_desc, bootstyle="primary", width=10).pack(side="right", padx=5)
-        ttk.Button(btn_frame, text="取消", command=cancel, bootstyle="secondary", width=10).pack(side="right", padx=5)
+
+        # 按钮逻辑：点击“保存”直接保存，点击“放弃”直接关闭，点击“X”才询问
+        ttk.Button(btn_frame, text="保存", command=save_desc, bootstyle="primary", width=12).pack(side="right", padx=10)
+        ttk.Button(btn_frame, text="放弃", command=cancel, bootstyle="secondary", width=12).pack(side="right", padx=10)
         win.protocol("WM_DELETE_WINDOW", on_close)
+
+        # 中间文本输入框 (最后pack fill="both" 占用剩余空间)
+        text_frame = ttk.Frame(win)
+        text_frame.pack(fill="both", expand=True, padx=20, pady=5)
+        
+        text = Text(text_frame, wrap=tk.WORD, font=("微软雅黑", 12), undo=True)
+        scroll = Scrollbar(text_frame, command=text.yview)
+        text.configure(yscrollcommand=scroll.set)
+        text.insert("end", self.archive_desc)
+        
+        text.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
     
     def show_version_desc(self, event):
         """点击版本查看说明"""
@@ -229,17 +247,57 @@ class VersionControlApp:
         html_view.fit_height()
         html_view.pack(fill="both", expand=True, padx=5, pady=5)
 
+    def load_recent_dirs(self):
+        try:
+            if os.path.exists(self.config_file):
+                with open(self.config_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    return data.get('recent_dirs', [])
+        except:
+            pass
+        return []
+
+    def save_recent_dirs(self):
+        try:
+            with open(self.config_file, 'w', encoding='utf-8') as f:
+                json.dump({'recent_dirs': self.recent_dirs}, f, ensure_ascii=False)
+        except:
+            pass
+            
+    def add_recent_dir(self, d):
+        d = os.path.abspath(d)
+        if d in self.recent_dirs:
+            self.recent_dirs.remove(d)
+        self.recent_dirs.insert(0, d)
+        self.recent_dirs = self.recent_dirs[:5]
+        self.save_recent_dirs()
+        self.dir_entry['values'] = self.recent_dirs
+
     def select_dir(self):
         dir_path = filedialog.askdirectory()
         if dir_path:
-            self.work_dir = dir_path
-            self.dir_entry.delete(0, "end")
-            self.dir_entry.insert(0, dir_path)
-            self.vc = VersionControl(dir_path)
-            self.archive_desc = ""
-            self.refresh_status()
-            self.refresh_versions()
-            self.refresh_operation_log()
+            self.load_workspace(dir_path)
+
+    def on_combobox_select(self, event=None):
+        dir_path = self.dir_entry.get().strip()
+        if os.path.isdir(dir_path):
+            self.load_workspace(dir_path)
+        else:
+            self.msg_label.config(text="目录不存在！")
+
+    def load_workspace(self, dir_path):
+        self.work_dir = dir_path
+        self.dir_entry.set(dir_path)
+        self.add_recent_dir(dir_path)
+        self.vc = VersionControl(dir_path)
+        self.archive_desc = ""
+        self.refresh_status()
+        self.refresh_versions()
+        self.refresh_operation_log()
+        
+        # 选择目录后默认自动开始监视
+        if not self.monitoring:
+            self.toggle_monitor()
 
     def refresh_operation_log(self):
         """刷新操作历史列表"""
@@ -284,6 +342,12 @@ class VersionControlApp:
         if not self.vc:
             self.msg_label.config(text="请先选择工作目录")
             return
+        
+        if not self.archive_desc.strip():
+            if not messagebox.askyesno("未编辑存档说明", "未编辑存档说明，是否存档？\n\n点击“是”直接存档，点击“否”去编辑说明。"):
+                self.show_archive_input()
+                return
+
         desc = self.archive_desc
         version, msg = self.vc.create_archive(desc)
         self.msg_label.config(text=msg)
