@@ -36,6 +36,7 @@ ENV/
 Thumbs.db
 somefortry/
 release/
+.env
 
 # IDE相关
 .vscode/
