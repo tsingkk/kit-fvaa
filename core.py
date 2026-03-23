@@ -7,15 +7,24 @@ from datetime import datetime
 class VersionControl:
     def __init__(self, work_dir):
         self.work_dir = os.path.abspath(work_dir)
-        self.vcs_dir = os.path.join(self.work_dir, '.vcs')
-        self.versions_dir = os.path.join(self.vcs_dir, 'versions')
-        self.manifest_path = os.path.join(self.vcs_dir, 'manifest.json')
-        self.cache_path = os.path.join(self.vcs_dir, 'cache.json')
-        self.exclude = ['.vcs', '.git', 'node_modules', '__pycache__', '*.tmp', '*.log']
-        self._init_vcs()
+        # 兼容性迁移：如果存在旧的 .vcs 目录，则将其重命名为 .fvaa
+        old_fvaa_dir = os.path.join(self.work_dir, '.vcs')
+        new_fvaa_dir = os.path.join(self.work_dir, '.fvaa')
+        if os.path.exists(old_fvaa_dir) and not os.path.exists(new_fvaa_dir):
+            try:
+                os.rename(old_fvaa_dir, new_fvaa_dir)
+            except:
+                pass
+        
+        self.fvaa_dir = new_fvaa_dir
+        self.versions_dir = os.path.join(self.fvaa_dir, 'versions')
+        self.manifest_path = os.path.join(self.fvaa_dir, 'manifest.json')
+        self.cache_path = os.path.join(self.fvaa_dir, 'cache.json')
+        self.default_exclude = ['.fvaa', '.git', 'node_modules', '__pycache__', '*.tmp', '*.log']
+        self._init_fvaa()
 
-    def _init_vcs(self):
-        os.makedirs(self.vcs_dir, exist_ok=True)
+    def _init_fvaa(self):
+        os.makedirs(self.fvaa_dir, exist_ok=True)
         os.makedirs(self.versions_dir, exist_ok=True)
         if not os.path.exists(self.manifest_path):
             with open(self.manifest_path, 'w', encoding='utf-8') as f:
@@ -24,14 +33,32 @@ class VersionControl:
             with open(self.cache_path, 'w', encoding='utf-8') as f:
                 json.dump({}, f, indent=2)
 
+    def get_excludes(self):
+        excludes = list(self.default_exclude)
+        ignore_file = os.path.join(self.fvaa_dir, '.fvaaignore')
+        if os.path.exists(ignore_file):
+            try:
+                with open(ignore_file, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith('#'):
+                            excludes.append(line)
+            except:
+                pass
+        return excludes
+
     def _is_excluded(self, path):
         rel_path = os.path.relpath(path, self.work_dir)
-        for ex in self.exclude:
-            if ex.startswith('*'):
-                if rel_path.endswith(ex[1:]):
+        # Normalize slashes for generic matching
+        rel_path_norm = rel_path.replace('\\', '/')
+        excludes = self.get_excludes()
+        for ex in excludes:
+            ex_norm = ex.replace('\\', '/').rstrip('/') # Remove trailing slash for matching
+            if ex_norm.startswith('*'):
+                if rel_path_norm.endswith(ex_norm[1:]):
                     return True
             else:
-                if rel_path.startswith(ex) or ex in rel_path.split(os.sep):
+                if rel_path_norm.startswith(ex_norm + '/') or rel_path_norm == ex_norm or ex_norm in rel_path_norm.split('/'):
                     return True
         return False
 
@@ -47,7 +74,9 @@ class VersionControl:
 
     def scan_files(self):
         files = {}
-        for root, _, filenames in os.walk(self.work_dir):
+        for root, dirs, filenames in os.walk(self.work_dir):
+            # Prune excluded directories to avoid unnecessary recursion
+            dirs[:] = [d for d in dirs if not self._is_excluded(os.path.join(root, d))]
             for filename in filenames:
                 full_path = os.path.join(root, filename)
                 if self._is_excluded(full_path):
@@ -81,7 +110,9 @@ class VersionControl:
                 diff['unchanged'].append(path)
         for path in old_cache:
             if path not in current_files:
-                diff['deleted'].append(path)
+                # Do not report as deleted if it's currently excluded
+                if not self._is_excluded(os.path.join(self.work_dir, path)):
+                    diff['deleted'].append(path)
         return diff, current_files
 
     def create_archive(self, description=""):
@@ -191,9 +222,13 @@ class VersionControl:
             return False, "版本不存在"
         
         version_dir = os.path.join(self.versions_dir, str(version))
-        # 先删除当前所有非排除文件
+        # 先删除当前所有非排除文件，优化目录遍历避免进入巨大的忽略目录
         deleted_count = 0
-        for root, _, filenames in os.walk(self.work_dir, topdown=False):
+        dirs_to_check = []
+        for root, dirs, filenames in os.walk(self.work_dir, topdown=True):
+            # Prune excluded directories
+            dirs[:] = [d for d in dirs if not self._is_excluded(os.path.join(root, d))]
+            dirs_to_check.append(root)
             for filename in filenames:
                 full_path = os.path.join(root, filename)
                 if not self._is_excluded(full_path):
@@ -202,10 +237,12 @@ class VersionControl:
                         deleted_count +=1
                     except:
                         return False, f"删除文件失败：{full_path}，请关闭占用该文件的程序后重试"
-            # 删除空文件夹
+        
+        # 倒序删除空文件夹
+        for d in reversed(dirs_to_check):
             try:
-                if not os.listdir(root) and not self._is_excluded(root):
-                    os.rmdir(root)
+                if d != self.work_dir and not os.listdir(d) and not self._is_excluded(d):
+                    os.rmdir(d)
             except:
                 pass
         

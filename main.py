@@ -4,6 +4,7 @@ from tkinter import filedialog, messagebox, Toplevel, Text, Scrollbar
 from tkhtmlview import HTMLLabel
 import markdown
 import os
+import sys
 from core import VersionControl
 import threading
 import time
@@ -16,11 +17,28 @@ class VersionControlApp:
         self.root.geometry("1600x850")
         self.root.minsize(1200, 760)
         
-        self.config_file = "fvaa_config.json"
+        if "__compiled__" in globals():
+            application_path = os.path.dirname(sys.argv[0])
+        elif getattr(sys, 'frozen', False):
+            application_path = os.path.dirname(sys.executable)
+        else:
+            application_path = os.path.dirname(os.path.abspath(__file__))
+            
+        self.config_file = os.path.join(application_path, "fvaa_config.json")
         self.recent_dirs = self.load_recent_dirs()
         
-        # 自定义高亮滚动条样式
+        # 自定义高亮滚动条样式和按钮字体
         style = ttk.Style()
+        style.configure("TButton", font=("微软雅黑", 11, "bold"))
+        style.configure("Treeview", font=("微软雅黑", 12), rowheight=28)
+        style.configure("dark.Treeview", font=("微软雅黑", 12), rowheight=28)
+        style.configure("Treeview.Heading", font=("微软雅黑", 12, "bold"))
+        style.configure("dark.Treeview.Heading", font=("微软雅黑", 12, "bold"))
+        
+        # Add light gray separator lines for headings
+        style.configure("Treeview.Heading", borderwidth=1, relief="solid", bordercolor="#d3d3d3")
+        style.configure("dark.Treeview.Heading", borderwidth=1, relief="solid", bordercolor="#d3d3d3")
+
         style.configure("Custom.Vertical.TScrollbar", 
                         background="#e0e0e0", 
                         troughcolor="#888888",
@@ -61,14 +79,17 @@ class VersionControlApp:
         btn_frame = ttk.Frame(root)
         btn_frame.pack(pady=5, fill="x", padx=10)
         
-        self.refresh_btn = ttk.Button(btn_frame, text="刷新状态", command=self.refresh_status, bootstyle="secondary")
+        self.refresh_btn = ttk.Button(btn_frame, text="刷新状态", command=self.refresh_status, bootstyle="primary")
         self.refresh_btn.pack(side="left", padx=5)
         
-        self.monitor_btn = ttk.Button(btn_frame, text="开始监视", command=self.toggle_monitor, bootstyle="secondary")
+        self.monitor_btn = ttk.Button(btn_frame, text="开始监视", command=self.toggle_monitor, bootstyle="success")
         self.monitor_btn.pack(side="left", padx=5)
         
+        self.ignore_btn = ttk.Button(btn_frame, text="忽视文件", command=self.show_ignore_input, bootstyle="secondary")
+        self.ignore_btn.pack(side="left", padx=5)
+        
         self.archive_desc = ""
-        self.desc_btn = ttk.Button(btn_frame, text="编辑存档说明", command=self.show_archive_input, bootstyle="secondary", width=12)
+        self.desc_btn = ttk.Button(btn_frame, text="编辑存档说明", command=self.show_archive_input, bootstyle="info", width=12)
         self.desc_btn.pack(side="left", padx=2)
         
         self.archive_btn = ttk.Button(btn_frame, text="一键存档", command=self.create_archive, bootstyle="success", width=8)
@@ -82,6 +103,10 @@ class VersionControlApp:
         self.tag_entry.pack(side="left", padx=2)
         self.tag_btn = ttk.Button(btn_frame, text="添加标签", command=self.add_tag, bootstyle="info", width=8)
         self.tag_btn.pack(side="left", padx=2)
+        
+        self.tag_msg_label = ttk.Label(btn_frame, text="", bootstyle="danger", font=("微软雅黑", 10, "bold"))
+        self.tag_msg_label.pack(side="left", padx=5)
+
         
         # 消息提示
         self.msg_label = ttk.Label(root, text="", bootstyle="warning")
@@ -103,7 +128,7 @@ class VersionControlApp:
         op_inner_frame = ttk.Frame(op_frame)
         op_inner_frame.pack(fill="both", expand=True)
         # 先创建列表控件
-        self.op_list = tk.Listbox(op_inner_frame, font=("微软雅黑", 11), bg="#3c3f41", fg="#f0f0f0", selectbackground="#4682b4")
+        self.op_list = tk.Listbox(op_inner_frame, font=("微软雅黑", 12), bg="#3c3f41", fg="#f0f0f0", selectbackground="#4682b4")
         # 横向+竖向滚动条（高亮样式）
         op_yscroll = ttk.Scrollbar(op_inner_frame, orient="vertical", command=self.op_list.yview, style="Custom.Vertical.TScrollbar")
         op_xscroll = ttk.Scrollbar(op_inner_frame, orient="horizontal", command=self.op_list.xview, style="Custom.Horizontal.TScrollbar")
@@ -117,7 +142,7 @@ class VersionControlApp:
         
         # 文件状态面板
         status_frame = ttk.Frame(paned)
-        paned.add(status_frame, weight=8)
+        paned.add(status_frame, weight=5)
         
         ttk.Label(status_frame, text="文件状态", font=("微软雅黑", 14, "bold")).pack(pady=5)
         status_inner_frame = ttk.Frame(status_frame)
@@ -127,7 +152,7 @@ class VersionControlApp:
         self.status_tree.heading("status", text="状态")
         self.status_tree.heading("path", text="文件路径")
         self.status_tree.column("status", width=60, anchor="center", stretch=False)
-        self.status_tree.column("path", width=500, stretch=True)
+        self.status_tree.column("path", width=380, stretch=True)
         # 横向+竖向滚动条（高亮样式）
         status_yscroll = ttk.Scrollbar(status_inner_frame, orient="vertical", command=self.status_tree.yview, style="Custom.Vertical.TScrollbar")
         status_xscroll = ttk.Scrollbar(status_inner_frame, orient="horizontal", command=self.status_tree.xview, style="Custom.Horizontal.TScrollbar")
@@ -141,7 +166,7 @@ class VersionControlApp:
         
         # 版本历史面板
         version_frame = ttk.Frame(paned)
-        paned.add(version_frame, weight=4)
+        paned.add(version_frame, weight=7)
         
         ttk.Label(version_frame, text="版本历史", font=("微软雅黑", 14, "bold")).pack(pady=5)
         version_inner_frame = ttk.Frame(version_frame)
@@ -152,10 +177,10 @@ class VersionControlApp:
         self.version_tree.heading("time", text="时间", anchor="center")
         self.version_tree.heading("desc", text="说明", anchor="center")
         self.version_tree.heading("tags", text="标签", anchor="center")
-        self.version_tree.column("version", width=60, anchor="center", stretch=False)
-        self.version_tree.column("time", width=160, anchor="center", stretch=False)
-        self.version_tree.column("desc", width=100, anchor="center", stretch=True)
-        self.version_tree.column("tags", width=100, anchor="center", stretch=True)
+        self.version_tree.column("version", width=80, anchor="center", stretch=False)
+        self.version_tree.column("time", width=180, anchor="center", stretch=False)
+        self.version_tree.column("desc", width=220, anchor="center", stretch=True)
+        self.version_tree.column("tags", width=160, anchor="center", stretch=True)
         # 横向+竖向滚动条（高亮样式）
         version_yscroll = ttk.Scrollbar(version_inner_frame, orient="vertical", command=self.version_tree.yview, style="Custom.Vertical.TScrollbar")
         version_xscroll = ttk.Scrollbar(version_inner_frame, orient="horizontal", command=self.version_tree.xview, style="Custom.Horizontal.TScrollbar")
@@ -224,6 +249,66 @@ class VersionControlApp:
         
         text.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
+    
+    def show_ignore_input(self):
+        """弹出忽视文件编辑窗口"""
+        if not self.vc:
+            self.msg_label.config(text="请先选择工作目录")
+            return
+            
+        win = Toplevel(self.root)
+        win.title("编辑忽视文件规则")
+        win.geometry("500x600")
+        win.transient(self.root)
+        win.focus_set()
+        
+        hint_label = ttk.Label(win, text="请输入要忽视的文件或文件夹相对路径（每行一个）。\n支持类似 *.log 的通配符。这些文件将不再被监视、显示状态和存档。", bootstyle="info", wraplength=450)
+        hint_label.pack(pady=(15, 5), padx=20, fill="x", side="top")
+
+        btn_frame = ttk.Frame(win)
+        btn_frame.pack(fill="x", side="bottom", pady=15, padx=20)
+        
+        ignore_file = os.path.join(self.work_dir, '.fvaa', '.fvaaignore')
+        
+        def save_ignore():
+            content = text.get("1.0", "end-1c")
+            try:
+                with open(ignore_file, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                self.msg_label.config(text="忽视文件规则已保存")
+                self.refresh_status()  # 刷新状态以应用新规则
+            except Exception as e:
+                self.msg_label.config(text=f"保存失败：{e}")
+            win.destroy()
+        
+        def cancel():
+            win.destroy()
+
+        ttk.Button(btn_frame, text="保存", command=save_ignore, bootstyle="primary", width=12).pack(side="right", padx=10)
+        ttk.Button(btn_frame, text="放弃", command=cancel, bootstyle="secondary", width=12).pack(side="right", padx=10)
+
+        text_frame = ttk.Frame(win)
+        text_frame.pack(fill="both", expand=True, padx=20, pady=5)
+        
+        text = Text(text_frame, wrap=tk.NONE, font=("微软雅黑", 12), undo=True)
+        scroll_y = Scrollbar(text_frame, command=text.yview)
+        scroll_x = Scrollbar(text_frame, orient="horizontal", command=text.xview)
+        text.configure(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
+        
+        existing_content = ""
+        if os.path.exists(ignore_file):
+            try:
+                with open(ignore_file, 'r', encoding='utf-8') as f:
+                    existing_content = f.read()
+            except:
+                pass
+        text.insert("end", existing_content)
+        
+        text.grid(row=0, column=0, sticky="nsew")
+        scroll_y.grid(row=0, column=1, sticky="ns")
+        scroll_x.grid(row=1, column=0, sticky="ew")
+        text_frame.grid_rowconfigure(0, weight=1)
+        text_frame.grid_columnconfigure(0, weight=1)
     
     def show_version_desc(self, event):
         """点击版本查看说明"""
@@ -374,12 +459,14 @@ class VersionControlApp:
             self.refresh_operation_log()
     
     def add_tag(self):
+        self.tag_msg_label.config(text="")
         if not self.vc:
             self.msg_label.config(text="请先选择工作目录")
             return
         selected = self.version_tree.selection()
         if not selected:
-            self.msg_label.config(text="请先选择要打标签的版本")
+            self.tag_msg_label.config(text="请现在版本历史中选择要打标签的版本！")
+            self.root.after(3000, lambda: self.tag_msg_label.config(text=""))
             return
         tag_name = self.tag_entry.get().strip()
         if not tag_name:
@@ -403,10 +490,10 @@ class VersionControlApp:
             return
         self.monitoring = not self.monitoring
         if self.monitoring:
-            self.monitor_btn.config(text="停止监视")
+            self.monitor_btn.configure(text="停止监视", bootstyle="danger")
             threading.Thread(target=self.monitor_thread, daemon=True).start()
         else:
-            self.monitor_btn.config(text="开始监视")
+            self.monitor_btn.configure(text="开始监视", bootstyle="success")
 
 if __name__ == "__main__":
     app = ttk.Window(themename="cyborg", title="Kit文件存档助手")
