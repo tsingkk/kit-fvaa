@@ -37,6 +37,7 @@ Thumbs.db
 somefortry/
 release/
 .env
+fvaa_config.json
 
 # IDE相关
 .vscode/
