@@ -61,8 +61,12 @@ class VersionControlApp:
         self.monitoring = False
         
         # 标题
-        title_label = ttk.Label(root, text="Kit文件存档助手", font=("微软雅黑", 20, "bold"), bootstyle="info")
-        title_label.pack(pady=10)
+        header_frame = ttk.Frame(root)
+        header_frame.pack(fill="x", pady=10)
+        title_label = ttk.Label(header_frame, text="Kit文件存档助手", font=("微软雅黑", 20, "bold"), bootstyle="info")
+        title_label.pack()
+        copyright_label = ttk.Label(header_frame, text="by tsingkk under GPLv3 License", font=("微软雅黑", 12), foreground="grey")
+        copyright_label.place(relx=1.0, rely=0.5, anchor="e", x=-10)
         
         # 工作目录选择
         dir_frame = ttk.Frame(root)
