@@ -28,7 +28,28 @@ class VersionControl:
         os.makedirs(self.versions_dir, exist_ok=True)
         if not os.path.exists(self.manifest_path):
             with open(self.manifest_path, 'w', encoding='utf-8') as f:
-                json.dump({'versions': [], 'next_version': 1, 'tags': {}, 'operation_log': []}, f, indent=2)
+                json.dump({'versions': [], 'next_version': 1, 'tags': {}, 'operation_log': [], 'pending_desc': ''}, f, indent=2, ensure_ascii=False)
+
+    def get_pending_desc(self):
+        """获取暂存的存档说明"""
+        try:
+            with open(self.manifest_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return data.get('pending_desc', '')
+        except:
+            return ''
+
+    def save_pending_desc(self, desc):
+        """保存暂存的存档说明"""
+        try:
+            with open(self.manifest_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            data['pending_desc'] = desc
+            with open(self.manifest_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            return True
+        except:
+            return False
         if not os.path.exists(self.cache_path):
             with open(self.cache_path, 'w', encoding='utf-8') as f:
                 json.dump({}, f, indent=2)

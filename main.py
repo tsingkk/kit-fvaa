@@ -9,6 +9,9 @@ from core import VersionControl
 import threading
 import time
 import json
+import win32gui
+import win32api
+import win32con
 
 class VersionControlApp:
     def __init__(self, root):
@@ -25,7 +28,9 @@ class VersionControlApp:
             application_path = os.path.dirname(os.path.abspath(__file__))
             
         self.config_file = os.path.join(application_path, "fvaa_config.json")
-        self.recent_dirs = self.load_recent_dirs()
+        self.config = self.load_config()
+        self.recent_dirs = self.config.get('recent_dirs', [])
+        self.archive_desc = ""
         
         # 自定义高亮滚动条样式和按钮字体
         style = ttk.Style()
@@ -92,7 +97,6 @@ class VersionControlApp:
         self.ignore_btn = ttk.Button(btn_frame, text="忽视文件", command=self.show_ignore_input, bootstyle="secondary")
         self.ignore_btn.pack(side="left", padx=5)
         
-        self.archive_desc = ""
         self.desc_btn = ttk.Button(btn_frame, text="编辑存档说明", command=self.show_archive_input, bootstyle="info", width=12)
         self.desc_btn.pack(side="left", padx=2)
         
@@ -107,9 +111,17 @@ class VersionControlApp:
         self.tag_entry.pack(side="left", padx=2)
         self.tag_btn = ttk.Button(btn_frame, text="添加标签", command=self.add_tag, bootstyle="info", width=8)
         self.tag_btn.pack(side="left", padx=2)
+
+        self.minimize_to_tray_var = tk.BooleanVar(value=self.config.get('minimize_to_tray', False))
+        self.tray_checkbox = ttk.Checkbutton(btn_frame, text="最小化至状态栏", variable=self.minimize_to_tray_var, bootstyle="info-round-toggle", command=self.save_config)
+        self.tray_checkbox.pack(side="right", padx=10)
         
         self.tag_msg_label = ttk.Label(btn_frame, text="", bootstyle="danger", font=("微软雅黑", 10, "bold"))
         self.tag_msg_label.pack(side="left", padx=5)
+
+        self.root.bind("<Unmap>", self.on_window_unmap)
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close_app)
+        self.tray_icon_created = False
 
         
         # 消息提示
@@ -211,8 +223,8 @@ class VersionControlApp:
         win = Toplevel(self.root)
         win.title("编辑存档说明")
         win.geometry("600x500")
-        win.transient(self.root)
         win.focus_set()
+        win.resizable(True, True)
         
         # 顶部提示语
         hint_label = ttk.Label(win, text="请记录当前目录中的文件修改情况，一键存档时将与存档版本绑定，方便后期查阅！", bootstyle="info", wraplength=550)
@@ -224,6 +236,8 @@ class VersionControlApp:
         
         def save_desc():
             self.archive_desc = text.get("1.0", "end-1c")
+            if self.vc:
+                self.vc.save_pending_desc(self.archive_desc)
             win.destroy()
             self.msg_label.config(text="存档说明已保存")
         
@@ -323,12 +337,12 @@ class VersionControlApp:
         if col != "#3": # 仅点击说明列才触发
             return
         version_data = self.version_tree.item(item)
-        desc = version_data['tags'][0] if version_data['tags'] else "无说明"
+        desc = self.version_tree.item(item, "tags")[0] if self.version_tree.item(item, "tags") else "无说明"
         
         win = Toplevel(self.root)
         win.title(f"版本 {version_data['values'][0]} 存档说明")
         win.geometry("600x400")
-        win.transient(self.root)
+        win.resizable(True, True)
         
         # 渲染markdown格式
         html = markdown.markdown(desc, extensions=['tables', 'fenced_code', 'nl2br'])
@@ -336,20 +350,25 @@ class VersionControlApp:
         html_view.fit_height()
         html_view.pack(fill="both", expand=True, padx=5, pady=5)
 
-    def load_recent_dirs(self):
+    def load_config(self):
+        config = {'recent_dirs': [], 'archive_desc': '', 'minimize_to_tray': False}
         try:
             if os.path.exists(self.config_file):
                 with open(self.config_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    return data.get('recent_dirs', [])
+                    config.update(data)
         except:
             pass
-        return []
+        return config
 
-    def save_recent_dirs(self):
+    def save_config(self):
+        config = {
+            'recent_dirs': self.recent_dirs,
+            'minimize_to_tray': self.minimize_to_tray_var.get()
+        }
         try:
             with open(self.config_file, 'w', encoding='utf-8') as f:
-                json.dump({'recent_dirs': self.recent_dirs}, f, ensure_ascii=False)
+                json.dump(config, f, ensure_ascii=False)
         except:
             pass
             
@@ -359,7 +378,7 @@ class VersionControlApp:
             self.recent_dirs.remove(d)
         self.recent_dirs.insert(0, d)
         self.recent_dirs = self.recent_dirs[:5]
-        self.save_recent_dirs()
+        self.save_config()
         self.dir_entry['values'] = self.recent_dirs
 
     def select_dir(self):
@@ -379,7 +398,7 @@ class VersionControlApp:
         self.dir_entry.set(dir_path)
         self.add_recent_dir(dir_path)
         self.vc = VersionControl(dir_path)
-        self.archive_desc = ""
+        self.archive_desc = self.vc.get_pending_desc()
         self.refresh_status()
         self.refresh_versions()
         self.refresh_operation_log()
@@ -445,6 +464,7 @@ class VersionControlApp:
             self.refresh_status()
             self.refresh_operation_log()
             self.archive_desc = ""
+            self.vc.save_pending_desc("")
     
     def restore_version(self):
         if not self.vc:
@@ -498,6 +518,84 @@ class VersionControlApp:
             threading.Thread(target=self.monitor_thread, daemon=True).start()
         else:
             self.monitor_btn.configure(text="开始监视", bootstyle="success")
+
+    def on_window_unmap(self, event):
+        if event.widget == self.root and self.root.state() == 'iconic':
+            if self.minimize_to_tray_var.get():
+                self.minimize_to_tray()
+
+    def minimize_to_tray(self):
+        self.root.withdraw()
+        if not self.tray_icon_created:
+            self.create_tray_icon()
+            self.tray_icon_created = True
+        else:
+            self.show_tray_icon()
+
+    def tray_wnd_proc(self, hwnd, msg, wparam, lparam):
+        if msg == win32con.WM_USER + 20:
+            if lparam == win32con.WM_LBUTTONDBLCLK or lparam == win32con.WM_LBUTTONUP:
+                self.root.after(0, self.restore_from_tray)
+            elif lparam == win32con.WM_RBUTTONUP:
+                menu = win32gui.CreatePopupMenu()
+                win32gui.AppendMenu(menu, win32con.MF_STRING, 1023, "打开主窗口")
+                win32gui.AppendMenu(menu, win32con.MF_STRING, 1024, "退出")
+                pos = win32api.GetCursorPos()
+                win32gui.SetForegroundWindow(hwnd)
+                win32gui.TrackPopupMenu(menu, win32con.TPM_LEFTALIGN, pos[0], pos[1], 0, hwnd, None)
+                win32gui.PostMessage(hwnd, win32con.WM_NULL, 0, 0)
+        elif msg == win32con.WM_COMMAND:
+            cmd_id = win32api.LOWORD(wparam)
+            if cmd_id == 1023:
+                self.root.after(0, self.restore_from_tray)
+            elif cmd_id == 1024:
+                self.root.after(0, self.on_close_app)
+        return win32gui.DefWindowProc(hwnd, msg, wparam, lparam)
+
+    def create_tray_icon(self):
+        def tray_loop():
+            wc = win32gui.WNDCLASS()
+            hinst = wc.hInstance = win32api.GetModuleHandle(None)
+            wc.lpszClassName = "KitFVAA_Tray"
+            wc.lpfnWndProc = self.tray_wnd_proc
+            try:
+                classAtom = win32gui.RegisterClass(wc)
+            except:
+                classAtom = win32gui.GetModuleHandle(None) # Already registered or similar
+            
+            style = win32con.WS_OVERLAPPED | win32con.WS_SYSMENU
+            self.hwnd = win32gui.CreateWindow("KitFVAA_Tray", "KitFVAA_Tray", style, 0, 0, win32con.CW_USEDEFAULT, win32con.CW_USEDEFAULT, 0, 0, hinst, None)
+            win32gui.UpdateWindow(self.hwnd)
+            
+            hicon = win32gui.LoadIcon(0, win32con.IDI_APPLICATION)
+            win32gui.Shell_NotifyIcon(win32gui.NIM_ADD, (self.hwnd, 0, win32gui.NIF_ICON | win32gui.NIF_MESSAGE | win32gui.NIF_TIP, win32con.WM_USER + 20, hicon, "Kit文件存档助手"))
+            win32gui.PumpMessages()
+        
+        threading.Thread(target=tray_loop, daemon=True).start()
+
+    def show_tray_icon(self):
+        # The NIM_MODIFY is only needed if we want to change something, 
+        # but since we create it once and keep it, NIM_ADD in tray_loop is enough.
+        # However, we can use NIM_MODIFY to ensure it's visible.
+        try:
+            hicon = win32gui.LoadIcon(0, win32con.IDI_APPLICATION)
+            win32gui.Shell_NotifyIcon(win32gui.NIM_MODIFY, (self.hwnd, 0, win32gui.NIF_ICON | win32gui.NIF_MESSAGE | win32gui.NIF_TIP, win32con.WM_USER + 20, hicon, "Kit文件存档助手"))
+        except:
+            pass
+
+    def restore_from_tray(self):
+        self.root.deiconify()
+        self.root.state('normal')
+        self.root.focus_force()
+
+    def on_close_app(self):
+        if self.tray_icon_created:
+            try:
+                win32gui.Shell_NotifyIcon(win32gui.NIM_DELETE, (self.hwnd, 0))
+            except:
+                pass
+        self.root.destroy()
+        os._exit(0) # Use os._exit to kill all threads immediately
 
 if __name__ == "__main__":
     app = ttk.Window(themename="cyborg", title="Kit文件存档助手")
