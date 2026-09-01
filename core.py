@@ -29,6 +29,9 @@ class VersionControl:
         if not os.path.exists(self.manifest_path):
             with open(self.manifest_path, 'w', encoding='utf-8') as f:
                 json.dump({'versions': [], 'next_version': 1, 'tags': {}, 'operation_log': [], 'pending_desc': ''}, f, indent=2, ensure_ascii=False)
+        if not os.path.exists(self.cache_path):
+            with open(self.cache_path, 'w', encoding='utf-8') as f:
+                json.dump({}, f, indent=2)
 
     def get_pending_desc(self):
         """获取暂存的存档说明"""
@@ -50,9 +53,6 @@ class VersionControl:
             return True
         except:
             return False
-        if not os.path.exists(self.cache_path):
-            with open(self.cache_path, 'w', encoding='utf-8') as f:
-                json.dump({}, f, indent=2)
 
     def get_excludes(self):
         excludes = list(self.default_exclude)

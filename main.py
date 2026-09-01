@@ -218,8 +218,53 @@ class VersionControlApp:
         for tag, (_, color) in self.status_tags.items():
             self.status_tree.tag_configure(tag, foreground=color)
     
+    STATUS_BLOCK_START = "<!-- FVAA文件状态清单 开始 -->"
+    STATUS_BLOCK_END = "<!-- FVAA文件状态清单 结束 -->"
+
+    def build_status_block(self):
+        """生成当前目录的文件状态清单（Markdown格式，含删除/新增/修改），无变更时返回空字符串"""
+        if not self.vc:
+            return ""
+        try:
+            diff, _ = self.vc.get_diff()
+        except Exception:
+            return ""
+        sections = [
+            ("删除", diff.get('deleted', [])),
+            ("新增", diff.get('added', [])),
+            ("修改", diff.get('modified', [])),
+        ]
+        if not any(paths for _, paths in sections):
+            return ""
+        lines = ["## 文件状态清单"]
+        for title, paths in sections:
+            if not paths:
+                continue
+            lines.append("")
+            lines.append(f"**{title}（{len(paths)} 个）：**")
+            for path in sorted(paths):
+                lines.append(f"- {path}")
+        return "\n".join(lines)
+
+    def merge_status_block(self, desc):
+        """将最新的文件状态清单填入说明顶部，并替换旧的自动生成清单"""
+        block = self.build_status_block()
+        body = desc or ""
+        start = body.find(self.STATUS_BLOCK_START)
+        if start != -1:
+            end = body.find(self.STATUS_BLOCK_END, start)
+            body = body[:start] + (body[end + len(self.STATUS_BLOCK_END):] if end != -1 else "")
+            body = body.strip("\n")
+        if not block:
+            return body
+        block = f"{self.STATUS_BLOCK_START}\n{block}\n{self.STATUS_BLOCK_END}"
+        return f"{block}\n\n{body}" if body else block
+
     def show_archive_input(self):
         """弹出存档说明编辑窗口"""
+        content = self.merge_status_block(self.archive_desc)
+        has_status = content.startswith(self.STATUS_BLOCK_START)
+
         win = Toplevel(self.root)
         win.title("编辑存档说明")
         win.geometry("600x500")
@@ -227,7 +272,11 @@ class VersionControlApp:
         win.resizable(True, True)
         
         # 顶部提示语
-        hint_label = ttk.Label(win, text="请记录当前目录中的文件修改情况，一键存档时将与存档版本绑定，方便后期查阅！", bootstyle="info", wraplength=550)
+        if has_status:
+            hint_text = "已自动填入当前目录的文件状态清单（删除、新增、修改），可在其后补充备注；一键存档时将与存档版本绑定，方便后期查阅！"
+        else:
+            hint_text = "请记录当前目录中的文件修改情况，一键存档时将与存档版本绑定，方便后期查阅！"
+        hint_label = ttk.Label(win, text=hint_text, bootstyle="info", wraplength=550)
         hint_label.pack(pady=(15, 5), padx=20, fill="x", side="top")
 
         # 底部按钮栏 (先pack side="bottom" 确保即使窗口缩小也始终可见)
@@ -263,7 +312,8 @@ class VersionControlApp:
         text = Text(text_frame, wrap=tk.WORD, font=("微软雅黑", 12), undo=True)
         scroll = Scrollbar(text_frame, command=text.yview)
         text.configure(yscrollcommand=scroll.set)
-        text.insert("end", self.archive_desc)
+        text.insert("end", content)
+        text.mark_set("insert", "end")
         
         text.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
