@@ -27,29 +27,98 @@ class VersionControl:
         os.makedirs(self.fvaa_dir, exist_ok=True)
         os.makedirs(self.versions_dir, exist_ok=True)
         if not os.path.exists(self.manifest_path):
-            with open(self.manifest_path, 'w', encoding='utf-8') as f:
-                json.dump({'versions': [], 'next_version': 1, 'tags': {}, 'operation_log': [], 'pending_desc': ''}, f, indent=2, ensure_ascii=False)
+            self._save_manifest(self._default_manifest())
+        else:
+            self._migrate_manifest()
         if not os.path.exists(self.cache_path):
             with open(self.cache_path, 'w', encoding='utf-8') as f:
                 json.dump({}, f, indent=2)
 
+    @staticmethod
+    def _default_manifest():
+        return {
+            'branches': {
+                'main': {'versions': [], 'next_version': 1, 'tags': {}, 'base_ref': None, 'created_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+            },
+            'current_branch': 'main',
+            'operation_log': [],
+            'pending_desc': ''
+        }
+
+    def _load_manifest(self):
+        with open(self.manifest_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+
+    def _save_manifest(self, manifest):
+        with open(self.manifest_path, 'w', encoding='utf-8') as f:
+            json.dump(manifest, f, indent=2, ensure_ascii=False)
+
+    def _migrate_manifest(self):
+        """将 v1（无分支）manifest 迁移为 v2 分支结构：所有历史数据归入 main 分支"""
+        try:
+            manifest = self._load_manifest()
+        except:
+            return
+        if 'branches' in manifest:
+            return
+        main_data = {
+            'versions': manifest.get('versions', []),
+            'next_version': manifest.get('next_version', 1),
+            'tags': manifest.get('tags', {}),
+            'base_ref': None,
+            'created_time': ''
+        }
+        new_manifest = {
+            'branches': {'main': main_data},
+            'current_branch': 'main',
+            'operation_log': manifest.get('operation_log', []),
+            'pending_desc': manifest.get('pending_desc', '')
+        }
+        for op in new_manifest['operation_log']:
+            op['branch'] = 'main'
+        # 版本目录由扁平结构 versions/N 迁移为 versions/main/N
+        main_dir = os.path.join(self.versions_dir, 'main')
+        os.makedirs(main_dir, exist_ok=True)
+        for name in os.listdir(self.versions_dir):
+            if name == 'main':
+                continue
+            src = os.path.join(self.versions_dir, name)
+            if os.path.isdir(src):
+                dest = os.path.join(main_dir, name)
+                if not os.path.exists(dest):
+                    try:
+                        shutil.move(src, dest)
+                    except:
+                        pass
+        self._save_manifest(new_manifest)
+
+    def get_current_branch(self):
+        """获取当前分支名称"""
+        manifest = self._load_manifest()
+        return manifest.get('current_branch', 'main')
+
+    def has_changes(self):
+        """判断工作目录相对最近一次状态是否存在变更文件"""
+        try:
+            diff, _ = self.get_diff()
+        except:
+            return True
+        return bool(diff['modified'] or diff['added'] or diff['deleted'])
+
     def get_pending_desc(self):
         """获取暂存的存档说明"""
         try:
-            with open(self.manifest_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                return data.get('pending_desc', '')
+            manifest = self._load_manifest()
+            return manifest.get('pending_desc', '')
         except:
             return ''
 
     def save_pending_desc(self, desc):
         """保存暂存的存档说明"""
         try:
-            with open(self.manifest_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            data['pending_desc'] = desc
-            with open(self.manifest_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
+            manifest = self._load_manifest()
+            manifest['pending_desc'] = desc
+            self._save_manifest(manifest)
             return True
         except:
             return False
@@ -145,12 +214,15 @@ class VersionControl:
         with open(self.manifest_path, 'r', encoding='utf-8') as f:
             manifest = json.load(f)
         
-        version = manifest['next_version']
-        version_dir = os.path.join(self.versions_dir, str(version))
+        # 版本号按分支独立编制，仅在同一分支内递增
+        branch = manifest['current_branch']
+        branch_data = manifest['branches'][branch]
+        version = branch_data['next_version']
+        version_dir = os.path.join(self.versions_dir, branch, str(version))
         os.makedirs(version_dir, exist_ok=True)
 
-        # 获取上一个版本，复用未修改文件的硬链接
-        prev_version = manifest['versions'][-1] if manifest['versions'] else None
+        # 获取本分支上一个版本，复用未修改文件的硬链接
+        prev_version = branch_data['versions'][-1] if branch_data['versions'] else None
         for path, info in current_files.items():
             dest = os.path.join(version_dir, path)
             os.makedirs(os.path.dirname(dest), exist_ok=True)
@@ -158,7 +230,7 @@ class VersionControl:
             linked = False
             if prev_version and path in prev_version['files'] and prev_version['files'][path]['hash'] == info['hash']:
                 try:
-                    prev_path = os.path.join(self.versions_dir, str(prev_version['version']), path)
+                    prev_path = os.path.join(self.versions_dir, branch, str(prev_version['version']), path)
                     os.link(prev_path, dest)
                     linked = True
                 except:
@@ -170,14 +242,15 @@ class VersionControl:
 
         version_info = {
             'version': version,
+            'branch': branch,
             'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'description': description,
             'diff': diff,
             'files': current_files,
             'tags': []
         }
-        manifest['versions'].append(version_info)
-        manifest['next_version'] += 1
+        branch_data['versions'].append(version_info)
+        branch_data['next_version'] += 1
 
         with open(self.manifest_path, 'w', encoding='utf-8') as f:
             json.dump(manifest, f, indent=2, ensure_ascii=False)
@@ -189,61 +262,66 @@ class VersionControl:
         
         return version_info, f"版本 {version} 存档成功，共 {total_changes} 个变更"
 
-    def record_operation(self, op_type, version):
-        """记录操作历史"""
-        with open(self.manifest_path, 'r', encoding='utf-8') as f:
-            manifest = json.load(f)
-        op_text = f"存档<版本{version}>" if op_type == 'archive' else f"恢复<版本{version}>"
+    def record_operation(self, op_type, version, branch=None):
+        """记录操作历史（带分支标记，用于按分支过滤展示）"""
+        manifest = self._load_manifest()
+        if op_type == 'archive':
+            op_text = f"存档<版本{version}>"
+        elif op_type == 'restore':
+            op_text = f"恢复<版本{version}>"
+        elif op_type == 'create_branch':
+            op_text = f"创建分支<{branch}>"
+        elif op_type == 'switch_branch':
+            op_text = f"切换分支<{branch}>"
+        else:
+            op_text = str(op_type)
         log_item = {
             'time': datetime.now().strftime('%Y-%m-%d %H:%M'),
-            'op': op_text
+            'op': op_text,
+            'branch': branch or manifest.get('current_branch', 'main')
         }
         # 最新操作插入到最前面
         manifest['operation_log'].insert(0, log_item)
-        with open(self.manifest_path, 'w', encoding='utf-8') as f:
-            json.dump(manifest, f, indent=2, ensure_ascii=False)
+        self._save_manifest(manifest)
     
-    def get_operation_log(self):
-        """获取操作历史"""
-        with open(self.manifest_path, 'r', encoding='utf-8') as f:
-            manifest = json.load(f)
-        return manifest.get('operation_log', [])
+    def get_operation_log(self, branch=None):
+        """获取操作历史，仅返回指定分支（默认当前分支）的记录"""
+        manifest = self._load_manifest()
+        branch = branch or manifest.get('current_branch', 'main')
+        logs = manifest.get('operation_log', [])
+        # 旧版本记录无 branch 字段，视为 main 分支
+        return [log for log in logs if log.get('branch', 'main') == branch]
 
     def add_tag(self, version, tag_name):
-        """给指定版本添加标签"""
-        with open(self.manifest_path, 'r', encoding='utf-8') as f:
-            manifest = json.load(f)
-        # 标签不能重复
-        if tag_name in manifest['tags']:
+        """给当前分支的指定版本添加标签"""
+        manifest = self._load_manifest()
+        branch = manifest.get('current_branch', 'main')
+        branch_data = manifest['branches'][branch]
+        # 标签在同一分支内不能重复
+        if tag_name in branch_data['tags']:
             return False, "标签已存在"
         # 查找对应版本
-        version_info = next((v for v in manifest['versions'] if v['version'] == version), None)
+        version_info = next((v for v in branch_data['versions'] if v['version'] == version), None)
         if not version_info:
             return False, "版本不存在"
         # 添加标签
-        manifest['tags'][tag_name] = version
+        branch_data['tags'][tag_name] = version
         if 'tags' not in version_info:
             version_info['tags'] = []
         version_info['tags'].append(tag_name)
         # 保存
-        with open(self.manifest_path, 'w', encoding='utf-8') as f:
-            json.dump(manifest, f, indent=2, ensure_ascii=False)
+        self._save_manifest(manifest)
         return True, f"标签 {tag_name} 添加成功"
 
     def get_versions(self):
-        with open(self.manifest_path, 'r', encoding='utf-8') as f:
-            manifest = json.load(f)
-        return sorted(manifest['versions'], key=lambda x: x['version'], reverse=True)
+        """获取当前分支的版本列表，按版本号倒序"""
+        manifest = self._load_manifest()
+        branch = manifest.get('current_branch', 'main')
+        versions = manifest['branches'][branch]['versions']
+        return sorted(versions, key=lambda x: x['version'], reverse=True)
 
-    def restore_version(self, version):
-        with open(self.manifest_path, 'r', encoding='utf-8') as f:
-            manifest = json.load(f)
-        version_info = next((v for v in manifest['versions'] if v['version'] == version), None)
-        if not version_info:
-            return False, "版本不存在"
-        
-        version_dir = os.path.join(self.versions_dir, str(version))
-        # 先删除当前所有非排除文件，优化目录遍历避免进入巨大的忽略目录
+    def _clear_workdir(self):
+        """删除工作目录中所有未被排除的文件，返回 (删除数量, 失败文件路径或None)"""
         deleted_count = 0
         dirs_to_check = []
         for root, dirs, filenames in os.walk(self.work_dir, topdown=True):
@@ -257,8 +335,7 @@ class VersionControl:
                         os.remove(full_path)
                         deleted_count +=1
                     except:
-                        return False, f"删除文件失败：{full_path}，请关闭占用该文件的程序后重试"
-        
+                        return -1, full_path
         # 倒序删除空文件夹
         for d in reversed(dirs_to_check):
             try:
@@ -266,6 +343,15 @@ class VersionControl:
                     os.rmdir(d)
             except:
                 pass
+        return deleted_count, None
+
+    def _restore_snapshot(self, version_info, branch):
+        """将指定分支的版本快照恢复到工作目录，返回 (success, msg, 文件映射)"""
+        version_dir = os.path.join(self.versions_dir, branch, str(version_info['version']))
+        # 先删除当前所有非排除文件，优化目录遍历避免进入巨大的忽略目录
+        deleted_count, failed_path = self._clear_workdir()
+        if deleted_count == -1:
+            return False, f"删除文件失败：{failed_path}，请关闭占用该文件的程序后重试", None
         
         # 复制所有版本文件到工作目录
         restored_count = 0
@@ -277,12 +363,130 @@ class VersionControl:
                 shutil.copy2(src, dest)
                 restored_count +=1
             except Exception as e:
-                return False, f"恢复文件失败：{path}，错误：{str(e)}"
+                return False, f"恢复文件失败：{path}，错误：{str(e)}", None
+        
+        return True, f"共恢复 {restored_count} 个文件", version_info['files']
+
+    def restore_version(self, version):
+        manifest = self._load_manifest()
+        branch = manifest.get('current_branch', 'main')
+        version_info = next((v for v in manifest['branches'][branch]['versions'] if v['version'] == version), None)
+        if not version_info:
+            return False, "版本不存在"
+        
+        success, msg, files = self._restore_snapshot(version_info, branch)
+        if not success:
+            return False, msg
         
         with open(self.cache_path, 'w', encoding='utf-8') as f:
-            json.dump(version_info['files'], f, indent=2)
+            json.dump(files, f, indent=2)
         
         # 记录操作历史
         self.record_operation('restore', version)
         
-        return True, f"版本 {version} 恢复成功，共恢复 {restored_count} 个文件"
+        return True, f"版本 {version} 恢复成功，{msg}"
+
+    def validate_branch_name(self, name):
+        """校验分支名称，合法时返回 (True, 去除首尾空白后的名称)，否则返回 (False, 原因)"""
+        name = (name or '').strip()
+        if not name:
+            return False, "分支名称不能为空"
+        if len(name) > 50:
+            return False, "分支名称过长（最多50个字符）"
+        if name in ('.', '..') or any(c in name for c in '\\/:*?"<>|'):
+            return False, '分支名称不能包含 \\ / : * ? " < > | 等字符'
+        manifest = self._load_manifest()
+        if name in manifest['branches']:
+            return False, f"分支 {name} 已存在"
+        return True, name
+
+    def create_branch(self, name):
+        """创建新分支：以当前分支最新归档为基线，版本号从1开始，创建后自动切换到新分支"""
+        ok, result = self.validate_branch_name(name)
+        if not ok:
+            return False, result
+        name = result
+        if self.has_changes():
+            return False, "创建新分支前需要先归档当前目录"
+        
+        manifest = self._load_manifest()
+        cur_branch = manifest.get('current_branch', 'main')
+        cur_versions = manifest['branches'][cur_branch]['versions']
+        base_ref = {'branch': cur_branch, 'version': cur_versions[-1]['version']} if cur_versions else None
+        manifest['branches'][name] = {
+            'versions': [],
+            'next_version': 1,
+            'tags': {},
+            'base_ref': base_ref,
+            'created_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+        manifest['current_branch'] = name
+        self._save_manifest(manifest)
+        
+        # 记录操作历史（归属新分支）
+        self.record_operation('create_branch', None, branch=name)
+        
+        return True, f"分支 {name} 创建成功，已切换至新分支"
+
+    def switch_branch(self, name):
+        """切换分支：工作目录恢复为该分支最新归档（尚未归档时恢复其创建时的基线快照）"""
+        manifest = self._load_manifest()
+        if name not in manifest['branches']:
+            return False, f"分支 {name} 不存在"
+        if name == manifest.get('current_branch', 'main'):
+            return True, f"已位于分支 {name}"
+        if self.has_changes():
+            return False, "切换分支前需要先归档当前目录"
+        
+        target = manifest['branches'][name]
+        versions = target['versions']
+        if versions:
+            latest = sorted(versions, key=lambda x: x['version'])[-1]
+            success, msg, files = self._restore_snapshot(latest, name)
+            if not success:
+                return False, msg
+        else:
+            # 尚未归档的分支：恢复创建时的基线快照
+            files = {}
+            base_ref = target.get('base_ref')
+            base_info = None
+            if base_ref:
+                base_data = manifest['branches'].get(base_ref['branch'])
+                if base_data:
+                    base_info = next((v for v in base_data['versions'] if v['version'] == base_ref['version']), None)
+            if base_info:
+                success, msg, files = self._restore_snapshot(base_info, base_ref['branch'])
+                if not success:
+                    return False, msg
+            else:
+                # 无基线快照时清空工作目录
+                deleted_count, failed_path = self._clear_workdir()
+                if deleted_count == -1:
+                    return False, f"删除文件失败：{failed_path}，请关闭占用该文件的程序后重试"
+        
+        with open(self.cache_path, 'w', encoding='utf-8') as f:
+            json.dump(files, f, indent=2)
+        
+        manifest['current_branch'] = name
+        self._save_manifest(manifest)
+        
+        # 记录操作历史（归属切换后的分支）
+        self.record_operation('switch_branch', None, branch=name)
+        
+        return True, f"已切换到分支 {name}"
+
+    def list_branches(self):
+        """列出所有分支及其最后归档时间"""
+        manifest = self._load_manifest()
+        current = manifest.get('current_branch', 'main')
+        result = []
+        for name, data in manifest['branches'].items():
+            versions = data.get('versions', [])
+            last_time = sorted(versions, key=lambda x: x['version'])[-1]['time'] if versions else None
+            result.append({
+                'name': name,
+                'last_archive_time': last_time,
+                'version_count': len(versions),
+                'is_current': name == current
+            })
+        return result

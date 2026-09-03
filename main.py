@@ -111,6 +111,12 @@ class VersionControlApp:
         self.tag_entry.pack(side="left", padx=2)
         self.tag_btn = ttk.Button(btn_frame, text="添加标签", command=self.add_tag, bootstyle="info", width=8)
         self.tag_btn.pack(side="left", padx=2)
+        
+        self.branch_create_btn = ttk.Button(btn_frame, text="创建分支", command=self.create_branch, bootstyle="secondary", width=8)
+        self.branch_create_btn.pack(side="left", padx=2)
+        
+        self.branch_switch_btn = ttk.Button(btn_frame, text="切换分支", command=self.switch_branch, bootstyle="secondary", width=8)
+        self.branch_switch_btn.pack(side="left", padx=2)
 
         self.minimize_to_tray_var = tk.BooleanVar(value=self.config.get('minimize_to_tray', False))
         self.tray_checkbox = ttk.Checkbutton(btn_frame, text="最小化至状态栏", variable=self.minimize_to_tray_var, bootstyle="info-round-toggle", command=self.save_config)
@@ -124,9 +130,13 @@ class VersionControlApp:
         self.tray_icon_created = False
 
         
-        # 消息提示
-        self.msg_label = ttk.Label(root, text="", bootstyle="warning")
-        self.msg_label.pack(pady=2, fill="x", padx=10)
+        # 消息提示 + 分支名称（第4行：消息靠左，分支名称正中间）
+        msg_frame = ttk.Frame(root)
+        msg_frame.pack(pady=2, fill="x", padx=10)
+        self.msg_label = ttk.Label(msg_frame, text="", bootstyle="warning")
+        self.msg_label.pack(side="left")
+        self.branch_label = ttk.Label(msg_frame, text="当前分支：-", font=("微软雅黑", 13, "bold"), bootstyle="info")
+        self.branch_label.place(relx=0.5, rely=0.5, anchor="center")
         
         # 状态摘要
         self.summary_label = ttk.Label(root, text="")
@@ -449,6 +459,7 @@ class VersionControlApp:
         self.add_recent_dir(dir_path)
         self.vc = VersionControl(dir_path)
         self.archive_desc = self.vc.get_pending_desc()
+        self.refresh_branch_label()
         self.refresh_status()
         self.refresh_versions()
         self.refresh_operation_log()
@@ -456,17 +467,29 @@ class VersionControlApp:
         # 选择目录后默认自动开始监视
         if not self.monitoring:
             self.toggle_monitor()
+    
+    def refresh_branch_label(self):
+        """刷新第4行正中间的分支名称显示"""
+        if self.vc:
+            self.branch_label.config(text=f"当前分支：{self.vc.get_current_branch()}")
+        else:
+            self.branch_label.config(text="当前分支：-")
 
     def refresh_operation_log(self):
-        """刷新操作历史列表"""
+        """刷新操作历史列表（仅显示当前分支的记录）"""
         if not self.vc:
             return
         self.op_list.delete(0, "end")
         logs = self.vc.get_operation_log()
         for idx, log in enumerate(logs):
-            tag = "archive" if "存档" in log['op'] else "restore"
+            if "存档" in log['op']:
+                bg = '#2d5033'  # 存档：绿色
+            elif "恢复" in log['op']:
+                bg = '#5a4a20'  # 恢复：棕色
+            else:
+                bg = '#20455a'  # 创建/切换分支：蓝色
             self.op_list.insert("end", f"{log['time']} {log['op']}")
-            self.op_list.itemconfig(idx, {'bg': '#2d5033' if tag == 'archive' else '#5a4a20'})
+            self.op_list.itemconfig(idx, {'bg': bg})
     
     def refresh_status(self):
         if not self.vc:
@@ -552,6 +575,132 @@ class VersionControlApp:
         if success:
             self.refresh_versions()
             self.tag_entry.delete(0, "end")
+    
+    def create_branch(self):
+        """创建分支：无变更文件时弹窗输入分支名称并创建（自动切换到新分支）"""
+        if not self.vc:
+            self.msg_label.config(text="请先选择工作目录")
+            return
+        if self.vc.has_changes():
+            messagebox.showwarning("创建分支", "创建新分支前需要先归档当前目录")
+            return
+        
+        win = Toplevel(self.root)
+        win.title("创建新分支")
+        win.geometry("460x190")
+        win.transient(self.root)
+        win.grab_set()
+        win.resizable(False, False)
+        win.focus_set()
+        
+        hint_label = ttk.Label(win, text="以当前分支最新归档为基线创建新分支，新分支版本号从 1 开始独立递增，\n创建后自动切换到新分支。", bootstyle="info", wraplength=420)
+        hint_label.pack(pady=(15, 5), padx=20)
+        
+        entry_frame = ttk.Frame(win)
+        entry_frame.pack(fill="x", padx=20, pady=5)
+        ttk.Label(entry_frame, text="分支名称:").pack(side="left", padx=5)
+        entry = ttk.Entry(entry_frame, width=30)
+        entry.pack(side="left", fill="x", expand=True)
+        
+        err_label = ttk.Label(win, text="", bootstyle="danger", wraplength=420)
+        err_label.pack(fill="x", padx=20)
+        
+        def confirm(event=None):
+            name = entry.get()
+            ok, result = self.vc.validate_branch_name(name)
+            if not ok:
+                err_label.config(text=result)
+                return
+            success, msg = self.vc.create_branch(result)
+            if success:
+                win.destroy()
+                self.msg_label.config(text=msg)
+                self.refresh_branch_label()
+                self.refresh_versions()
+                self.refresh_operation_log()
+                self.refresh_status()
+            else:
+                err_label.config(text=msg)
+        
+        def cancel():
+            win.destroy()
+        
+        btn_frame = ttk.Frame(win)
+        btn_frame.pack(side="bottom", pady=12)
+        ttk.Button(btn_frame, text="创建", command=confirm, bootstyle="primary", width=10).pack(side="left", padx=10)
+        ttk.Button(btn_frame, text="取消", command=cancel, bootstyle="secondary", width=10).pack(side="left", padx=10)
+        entry.bind("<Return>", confirm)
+        entry.focus_set()
+    
+    def switch_branch(self):
+        """切换分支：无变更文件时弹窗选择分支，切换后工作目录恢复为该分支最新归档"""
+        if not self.vc:
+            self.msg_label.config(text="请先选择工作目录")
+            return
+        if self.vc.has_changes():
+            messagebox.showwarning("切换分支", "切换分支前需要先归档当前目录")
+            return
+        
+        branches = self.vc.list_branches()
+        if len(branches) <= 1:
+            self.msg_label.config(text="当前只有一个分支，无需切换")
+            return
+        
+        win = Toplevel(self.root)
+        win.title("切换分支")
+        win.geometry("560x380")
+        win.transient(self.root)
+        win.grab_set()
+        win.focus_set()
+        
+        hint_label = ttk.Label(win, text="请选择要切换到的分支（切换后工作目录文件将恢复为该分支最新归档）：", bootstyle="info", wraplength=520)
+        hint_label.pack(pady=(15, 5), padx=20, anchor="w")
+        
+        tree_frame = ttk.Frame(win)
+        tree_frame.pack(fill="both", expand=True, padx=20, pady=5)
+        tree = ttk.Treeview(tree_frame, columns=("name", "time"), show="headings", height=8, bootstyle="dark")
+        tree.heading("name", text="分支名称", anchor="center")
+        tree.heading("time", text="最后归档时间", anchor="center")
+        tree.column("name", width=240, anchor="center")
+        tree.column("time", width=240, anchor="center")
+        yscroll = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview, style="Custom.Vertical.TScrollbar")
+        tree.configure(yscrollcommand=yscroll.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+        
+        # iid 直接使用分支名，便于选中后取回
+        for b in branches:
+            display_name = b['name'] + ("（当前分支）" if b['is_current'] else "")
+            time_text = b['last_archive_time'] or "尚未归档"
+            tree.insert("", "end", iid=b['name'], values=(display_name, time_text))
+        
+        def confirm():
+            selected = tree.selection()
+            if not selected:
+                messagebox.showinfo("切换分支", "请先选择要切换到的分支", parent=win)
+                return
+            branch_name = selected[0]
+            success, msg = self.vc.switch_branch(branch_name)
+            if success:
+                win.destroy()
+                self.msg_label.config(text=msg)
+                self.refresh_branch_label()
+                self.refresh_versions()
+                self.refresh_operation_log()
+                self.refresh_status()
+            else:
+                messagebox.showwarning("切换分支", msg, parent=win)
+        
+        def cancel():
+            win.destroy()
+        
+        btn_frame = ttk.Frame(win)
+        btn_frame.pack(side="bottom", pady=12)
+        ttk.Button(btn_frame, text="切换", command=confirm, bootstyle="primary", width=10).pack(side="left", padx=10)
+        ttk.Button(btn_frame, text="取消", command=cancel, bootstyle="secondary", width=10).pack(side="left", padx=10)
+        tree.bind("<Double-1>", lambda event: confirm())
     
     def monitor_thread(self):
         while self.monitoring:
