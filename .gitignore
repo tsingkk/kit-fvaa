@@ -38,10 +38,10 @@ somefortry/
 release/
 .env
 fvaa_config.json
+test/
 
 # IDE相关
 .vscode/
 .idea/
 *.swp
 *.swo
-*~
