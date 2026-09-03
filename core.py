@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import hashlib
 import shutil
 from datetime import datetime
@@ -312,6 +313,74 @@ class VersionControl:
         # 保存
         self._save_manifest(manifest)
         return True, f"标签 {tag_name} 添加成功"
+
+    def get_version_info(self, version):
+        """获取当前分支指定版本的元数据，不存在时返回 None"""
+        manifest = self._load_manifest()
+        branch = manifest.get('current_branch', 'main')
+        return next((v for v in manifest['branches'][branch]['versions'] if v['version'] == version), None)
+
+    @staticmethod
+    def _sanitize_filename_part(text):
+        """替换文件名片段中的非法字符，避免重命名失败"""
+        return re.sub(r'[\\/:*?"<>|]', '_', (text or '').strip())
+
+    def _build_retrieved_name(self, orig_name, branch, version_info):
+        """生成取回文件的重命名：<原文件名>-<分支名称>-<版本名称>-<归档日期>，保留原扩展名；
+        版本名称：有标签时为 <版本号>-<第一个标签>，无标签时为 <版本号>"""
+        stem, ext = os.path.splitext(orig_name)
+        version = version_info['version']
+        tags = version_info.get('tags') or []
+        tag = self._sanitize_filename_part(tags[0]) if tags else ''
+        version_name = f"{version}-{tag}" if tag else str(version)
+        parts = [stem, self._sanitize_filename_part(branch), version_name]
+        archive_date = (version_info.get('time') or '').strip().split(' ')[0]
+        if archive_date:
+            parts.append(archive_date)
+        return '-'.join(parts) + ext
+
+    def retrieve_files(self, version, rel_paths):
+        """从当前分支指定版本的归档中取回文件：复制到工作目录根目录并重命名，归档内原文件保持不变。
+        返回 (成功数量, 提示消息)"""
+        manifest = self._load_manifest()
+        branch = manifest.get('current_branch', 'main')
+        version_info = next((v for v in manifest['branches'][branch]['versions'] if v['version'] == version), None)
+        if not version_info:
+            return 0, "版本不存在"
+        version_dir = os.path.join(self.versions_dir, branch, str(version_info['version']))
+        files_map = version_info.get('files', {})
+        # 仅允许取回归档清单中实际存在的文件，防止路径穿越（兼容正/反斜杠写法）
+        normalized = {os.path.normpath(k): k for k in files_map}
+        requested = [normalized[os.path.normpath(p)] for p in (rel_paths or []) if os.path.normpath(p) in normalized]
+        if not requested:
+            return 0, "没有可取回的文件"
+        success = 0
+        failed = []
+        for path in requested:
+            src = os.path.join(version_dir, path)
+            if not os.path.isfile(src):
+                failed.append(path)
+                continue
+            orig_name = os.path.basename(path)
+            new_name = self._build_retrieved_name(orig_name, branch, version_info)
+            name_stem, name_ext = os.path.splitext(new_name)
+            dest = os.path.join(self.work_dir, new_name)
+            # 与工作目录现有文件重名时自动加序号
+            counter = 1
+            while os.path.exists(dest):
+                dest = os.path.join(self.work_dir, f"{name_stem}-{counter}{name_ext}")
+                counter += 1
+            try:
+                shutil.copy2(src, dest)
+                success += 1
+            except OSError as e:
+                failed.append(f"{path}（{str(e) or type(e).__name__}）")
+        msg = f"成功取回 {success} 个文件到工作目录"
+        if failed:
+            shown = '、'.join(failed[:3])
+            more = '等' if len(failed) > 3 else ''
+            msg += f"，{len(failed)} 个取回失败：{shown}{more}"
+        return success, msg
 
     def get_versions(self):
         """获取当前分支的版本列表，按版本号倒序"""

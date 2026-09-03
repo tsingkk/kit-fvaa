@@ -198,14 +198,16 @@ class VersionControlApp:
         version_inner_frame = ttk.Frame(version_frame)
         version_inner_frame.pack(fill="both", expand=True)
         # 先创建树控件
-        self.version_tree = ttk.Treeview(version_inner_frame, columns=("version", "time", "desc", "tags"), show="headings", height=25, bootstyle="dark")
+        self.version_tree = ttk.Treeview(version_inner_frame, columns=("version", "time", "desc", "files", "tags"), show="headings", height=25, bootstyle="dark")
         self.version_tree.heading("version", text="版本号", anchor="center")
         self.version_tree.heading("time", text="时间", anchor="center")
         self.version_tree.heading("desc", text="说明", anchor="center")
+        self.version_tree.heading("files", text="文件清单", anchor="center")
         self.version_tree.heading("tags", text="标签", anchor="center")
         self.version_tree.column("version", width=80, anchor="center", stretch=False)
         self.version_tree.column("time", width=180, anchor="center", stretch=False)
-        self.version_tree.column("desc", width=220, anchor="center", stretch=True)
+        self.version_tree.column("desc", width=200, anchor="center", stretch=True)
+        self.version_tree.column("files", width=90, anchor="center", stretch=False)
         self.version_tree.column("tags", width=160, anchor="center", stretch=True)
         # 横向+竖向滚动条（高亮样式）
         version_yscroll = ttk.Scrollbar(version_inner_frame, orient="vertical", command=self.version_tree.yview, style="Custom.Vertical.TScrollbar")
@@ -389,11 +391,15 @@ class VersionControlApp:
         text_frame.grid_columnconfigure(0, weight=1)
     
     def show_version_desc(self, event):
-        """点击版本查看说明"""
+        """点击版本查看说明或文件清单"""
         item = self.version_tree.identify_row(event.y)
         if not item:
             return
         col = self.version_tree.identify_column(event.x)
+        if col == "#4":  # 点击文件清单列，弹出文件取回窗口
+            version_num = int(self.version_tree.item(item, "values")[0])
+            self.show_version_files(version_num)
+            return
         if col != "#3": # 仅点击说明列才触发
             return
         version_data = self.version_tree.item(item)
@@ -409,6 +415,115 @@ class VersionControlApp:
         html_view = HTMLLabel(win, html=html)
         html_view.fit_height()
         html_view.pack(fill="both", expand=True, padx=5, pady=5)
+
+    @staticmethod
+    def format_file_size(size):
+        """文件大小人性化显示"""
+        if size >= 1024 * 1024:
+            return f"{size / 1024 / 1024:.1f} MB"
+        if size >= 1024:
+            return f"{size / 1024:.1f} KB"
+        return f"{size} B"
+
+    def show_version_files(self, version_num):
+        """弹窗展示指定版本的归档文件清单，勾选后可取回到当前工作目录"""
+        if not self.vc:
+            self.msg_label.config(text="请先选择工作目录")
+            return
+        version_info = self.vc.get_version_info(version_num)
+        if not version_info:
+            self.msg_label.config(text="版本不存在")
+            return
+        files_map = version_info.get('files', {})
+        files = sorted(files_map.keys())
+        if not files:
+            messagebox.showinfo("文件清单", f"版本 {version_num} 的归档为空")
+            return
+
+        win = Toplevel(self.root)
+        win.title(f"版本 {version_num} 文件清单（{len(files)} 个文件）")
+        win.geometry("760x680")
+        win.minsize(620, 520)
+        win.transient(self.root)
+        win.grab_set()
+        win.resizable(True, True) # 可缩放（含最大化按钮）
+        win.focus_set()
+
+        # 底部按钮栏先 pack side="bottom"，确保窗口缩小时“取回”等操作按钮始终可见
+        btn_frame = ttk.Frame(win)
+        btn_frame.pack(fill="x", side="bottom", pady=12, padx=20)
+
+        hint_label = ttk.Label(win, text="勾选需要取回的文件，点击“取回”将复制到当前工作目录并自动重命名\n（原文件名-分支名称-版本名称-归档日期），归档中的文件不会被修改。",
+                               bootstyle="info", wraplength=720, justify="left")
+        hint_label.pack(pady=(12, 5), padx=20, anchor="w", side="top")
+
+        count_label = ttk.Label(win, text="已勾选 0 个文件", bootstyle="info")
+        count_label.pack(anchor="w", padx=20, side="top")
+
+        tree_frame = ttk.Frame(win)
+        tree_frame.pack(fill="both", expand=True, padx=20, pady=5, side="top")
+        tree = ttk.Treeview(tree_frame, columns=("check", "path", "size"), show="headings", height=15, bootstyle="dark")
+        tree.heading("check", text="勾选", anchor="center")
+        tree.heading("path", text="文件路径", anchor="w")
+        tree.heading("size", text="大小", anchor="center")
+        tree.column("check", width=60, anchor="center", stretch=False)
+        tree.column("path", width=480, anchor="w", stretch=True)
+        tree.column("size", width=90, anchor="center", stretch=False)
+        yscroll = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview, style="Custom.Vertical.TScrollbar")
+        xscroll = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview, style="Custom.Horizontal.TScrollbar")
+        tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+
+        checked = set()
+        for path in files:
+            size_text = self.format_file_size(files_map[path].get('size', 0))
+            tree.insert("", "end", iid=path, values=("☐", path, size_text))
+
+        def toggle_item(path):
+            if not path:
+                return
+            if path in checked:
+                checked.discard(path)
+                tree.set(path, "check", "☐")
+            else:
+                checked.add(path)
+                tree.set(path, "check", "☑")
+            count_label.config(text=f"已勾选 {len(checked)} 个文件")
+
+        def select_all():
+            checked.update(files)
+            for path in files:
+                tree.set(path, "check", "☑")
+            count_label.config(text=f"已勾选 {len(checked)} 个文件")
+
+        def select_none():
+            checked.clear()
+            for path in files:
+                tree.set(path, "check", "☐")
+            count_label.config(text="已勾选 0 个文件")
+
+        tree.bind("<ButtonRelease-1>", lambda e: toggle_item(tree.identify_row(e.y)))
+
+        def do_retrieve():
+            if not checked:
+                messagebox.showinfo("取回文件", "请先勾选要取回的文件", parent=win)
+                return
+            if not messagebox.askyesno("确认取回", f"确定要取回勾选的 {len(checked)} 个文件到当前工作目录吗？", parent=win):
+                return
+            success_count, msg = self.vc.retrieve_files(version_num, sorted(checked))
+            self.msg_label.config(text=msg)
+            if success_count > 0:
+                self.refresh_status()
+                win.destroy()
+
+        ttk.Button(btn_frame, text="全选", command=select_all, bootstyle="secondary", width=8).pack(side="left", padx=10)
+        ttk.Button(btn_frame, text="全不选", command=select_none, bootstyle="secondary", width=8).pack(side="left", padx=2)
+        ttk.Button(btn_frame, text="取回", command=do_retrieve, bootstyle="primary", width=10).pack(side="right", padx=10)
+        ttk.Button(btn_frame, text="关闭", command=win.destroy, bootstyle="secondary", width=10).pack(side="right", padx=2)
 
     def load_config(self):
         config = {'recent_dirs': [], 'archive_desc': '', 'minimize_to_tray': False}
@@ -517,7 +632,7 @@ class VersionControlApp:
             tags = ','.join(v.get('tags', []))
             desc = v['description'] or "无说明"
             show_desc = "点击查看" if desc.strip() else "无说明"
-            self.version_tree.insert("", "end", values=(v['version'], v['time'], show_desc, tags), tags=(desc,))
+            self.version_tree.insert("", "end", values=(v['version'], v['time'], show_desc, "点击查看", tags), tags=(desc,))
     
     def create_archive(self):
         if not self.vc:
