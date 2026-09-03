@@ -45,3 +45,6 @@ test/
 .idea/
 *.swp
 *.swo
+
+# agent相关
+AGENTS.md
