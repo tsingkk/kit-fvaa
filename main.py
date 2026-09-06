@@ -1,7 +1,7 @@
 import ttkbootstrap as ttk
 import tkinter as tk
 from tkinter import filedialog, messagebox, Toplevel, Text, Scrollbar
-from tkhtmlview import HTMLLabel
+from tkhtmlview import HTMLLabel, HTMLScrolledText
 import markdown
 import os
 import sys
@@ -118,6 +118,9 @@ class VersionControlApp:
         self.branch_switch_btn = ttk.Button(btn_frame, text="切换分支", command=self.switch_branch, bootstyle="secondary", width=8)
         self.branch_switch_btn.pack(side="left", padx=2)
 
+        self.branch_history_btn = ttk.Button(btn_frame, text="分支历史", command=self.show_branch_history, bootstyle="secondary", width=8)
+        self.branch_history_btn.pack(side="left", padx=2)
+
         self.minimize_to_tray_var = tk.BooleanVar(value=self.config.get('minimize_to_tray', False))
         self.tray_checkbox = ttk.Checkbutton(btn_frame, text="最小化至状态栏", variable=self.minimize_to_tray_var, bootstyle="info-round-toggle", command=self.save_config)
         self.tray_checkbox.pack(side="right", padx=10)
@@ -232,6 +235,8 @@ class VersionControlApp:
     
     STATUS_BLOCK_START = "<!-- FVAA文件状态清单 开始 -->"
     STATUS_BLOCK_END = "<!-- FVAA文件状态清单 结束 -->"
+    # 分支历史图谱中各分支列的配色
+    GRAPH_COLORS = ("#4fc3f7", "#81c784", "#ffb74d", "#ba68c8", "#f06292", "#4dd0e1", "#aed581", "#ff8a65")
 
     def build_status_block(self):
         """生成当前目录的文件状态清单（Markdown格式，含删除/新增/修改），无变更时返回空字符串"""
@@ -272,8 +277,8 @@ class VersionControlApp:
         block = f"{self.STATUS_BLOCK_START}\n{block}\n{self.STATUS_BLOCK_END}"
         return f"{block}\n\n{body}" if body else block
 
-    def show_archive_input(self):
-        """弹出存档说明编辑窗口"""
+    def show_archive_input(self, archive_mode=False):
+        """弹出存档说明编辑窗口；archive_mode 为 True 时（一键存档流程）点击“保存”后才执行存档"""
         content = self.merge_status_block(self.archive_desc)
         has_status = content.startswith(self.STATUS_BLOCK_START)
 
@@ -282,6 +287,9 @@ class VersionControlApp:
         win.geometry("600x500")
         win.focus_set()
         win.resizable(True, True)
+        if archive_mode:
+            win.transient(self.root)
+            win.grab_set()
         
         # 顶部提示语
         if has_status:
@@ -296,18 +304,29 @@ class VersionControlApp:
         btn_frame.pack(fill="x", side="bottom", pady=15, padx=20)
         
         def save_desc():
-            self.archive_desc = text.get("1.0", "end-1c")
+            desc_text = text.get("1.0", "end-1c")
+            if archive_mode and not desc_text.strip():
+                messagebox.showwarning("存档说明", "存档说明不能为空，无法存档，请输入内容后再保存", parent=win)
+                return
+            self.archive_desc = desc_text
             if self.vc:
                 self.vc.save_pending_desc(self.archive_desc)
             win.destroy()
-            self.msg_label.config(text="存档说明已保存")
+            if archive_mode:
+                self._do_archive()
+            else:
+                self.msg_label.config(text="存档说明已保存")
         
         def cancel():
             win.destroy()
         
         def on_close():
             # 仅在点击右上角关闭(X)时提醒
-            if messagebox.askyesno("保存确认", "是否保存当前编辑的存档说明？"):
+            if archive_mode:
+                confirmed = messagebox.askyesno("保存确认", "是否保存存档说明并执行存档？")
+            else:
+                confirmed = messagebox.askyesno("保存确认", "是否保存当前编辑的存档说明？")
+            if confirmed:
                 save_desc()
             else:
                 cancel()
@@ -635,15 +654,14 @@ class VersionControlApp:
             self.version_tree.insert("", "end", values=(v['version'], v['time'], show_desc, "点击查看", tags), tags=(desc,))
     
     def create_archive(self):
+        """一键存档：先弹出存档说明编辑窗口，点击弹窗中的“保存”后才执行存档"""
         if not self.vc:
             self.msg_label.config(text="请先选择工作目录")
             return
-        
-        if not self.archive_desc.strip():
-            if not messagebox.askyesno("未编辑存档说明", "未编辑存档说明，是否存档？\n\n点击“是”直接存档，点击“否”去编辑说明。"):
-                self.show_archive_input()
-                return
+        self.show_archive_input(archive_mode=True)
 
+    def _do_archive(self):
+        """执行存档并刷新界面（存档说明已在前置弹窗中确认）"""
         desc = self.archive_desc
         version, msg = self.vc.create_archive(desc)
         self.msg_label.config(text=msg)
@@ -816,6 +834,185 @@ class VersionControlApp:
         ttk.Button(btn_frame, text="切换", command=confirm, bootstyle="primary", width=10).pack(side="left", padx=10)
         ttk.Button(btn_frame, text="取消", command=cancel, bootstyle="secondary", width=10).pack(side="left", padx=10)
         tree.bind("<Double-1>", lambda event: confirm())
+
+    def show_branch_history(self):
+        """弹窗展示分支历史图谱（类 Git 分支图：分支按列、版本按时间纵向排列、分叉处连线）"""
+        if not self.vc:
+            self.msg_label.config(text="请先选择工作目录")
+            return
+
+        win = Toplevel(self.root)
+        win.title("分支历史")
+        win.geometry("900x620")
+        win.minsize(680, 480)
+        win.transient(self.root)
+        win.resizable(True, True)
+        win.focus_set()
+
+        def refresh():
+            self._draw_branch_graph(canvas)
+
+        # 底部按钮栏 (先pack side="bottom" 确保即使窗口缩小也始终可见)
+        btn_frame = ttk.Frame(win)
+        btn_frame.pack(fill="x", side="bottom", pady=12, padx=20)
+        ttk.Button(btn_frame, text="刷新", command=refresh, bootstyle="info", width=10).pack(side="right", padx=10)
+        ttk.Button(btn_frame, text="关闭", command=win.destroy, bootstyle="secondary", width=10).pack(side="right", padx=2)
+
+        hint_label = ttk.Label(win, text="每列代表一个分支，节点为该分支的归档版本（空心为尚未归档的分支创建点），按时间自上而下排列；当前分支加粗高亮，点击节点可查看版本详情。",
+                               bootstyle="info", wraplength=860, justify="left")
+        hint_label.pack(pady=(12, 4), padx=20, anchor="w")
+
+        canvas_frame = ttk.Frame(win)
+        canvas_frame.pack(fill="both", expand=True, padx=20, pady=5)
+        canvas = tk.Canvas(canvas_frame, bg="#2b2b2b", highlightthickness=0)
+        yscroll = ttk.Scrollbar(canvas_frame, orient="vertical", command=canvas.yview, style="Custom.Vertical.TScrollbar")
+        xscroll = ttk.Scrollbar(canvas_frame, orient="horizontal", command=canvas.xview, style="Custom.Horizontal.TScrollbar")
+        canvas.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+        canvas_frame.grid_rowconfigure(0, weight=1)
+        canvas_frame.grid_columnconfigure(0, weight=1)
+
+        def on_wheel(event):
+            canvas.yview_scroll(-1 * int(event.delta / 120), "units")
+
+        # 仅当鼠标位于图谱上方时响应滚轮
+        canvas.bind("<Enter>", lambda e: canvas.bind_all("<MouseWheel>", on_wheel))
+        canvas.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
+
+        refresh()
+
+        def on_destroy(event):
+            if event.widget is win:
+                canvas.unbind_all("<MouseWheel>")
+        win.bind("<Destroy>", on_destroy)
+
+    def _draw_branch_graph(self, canvas):
+        """在 Canvas 上绘制类 Git 分支图：分支为列、版本节点按时间纵向排列、分叉处平滑连线"""
+        canvas.delete("all")
+        branches = self.vc.get_branch_graph()
+        if not branches:
+            canvas.create_text(20, 20, text="没有分支数据", fill="#f0f0f0", font=("微软雅黑", 12), anchor="nw")
+            canvas.configure(scrollregion=(0, 0, 400, 80))
+            return
+
+        lane_gap = 120
+        row_h = 34
+        left = 50
+        header_y = 26
+        top = 60
+
+        lane_of = {b['name']: i for i, b in enumerate(branches)}
+        color_of = {b['name']: self.GRAPH_COLORS[i % len(self.GRAPH_COLORS)] for i, b in enumerate(branches)}
+        is_current = {b['name']: b['is_current'] for b in branches}
+
+        # 收集节点：各分支版本 + 未归档分支的占位节点（分支创建点），按时间全局排序
+        nodes = []
+        for b in branches:
+            lane = lane_of[b['name']]
+            if b['versions']:
+                for v in b['versions']:
+                    nodes.append({'time': v['time'] or '9999', 'lane': lane, 'version': v['version'],
+                                  'branch': b['name'], 'info': v})
+            else:
+                nodes.append({'time': b['created_time'] or '9999', 'lane': lane, 'version': 0,
+                              'branch': b['name'], 'info': None})
+        nodes.sort(key=lambda n: (n['time'], n['lane'], n['version']))
+        for i, n in enumerate(nodes):
+            n['x'] = left + n['lane'] * lane_gap
+            n['y'] = top + i * row_h
+
+        # 列表头：分支名称（当前分支高亮）
+        for b in branches:
+            x = left + lane_of[b['name']] * lane_gap
+            name = b['name'] if len(b['name']) <= 10 else b['name'][:9] + "…"
+            header = name + ("（当前）" if b['is_current'] else "")
+            fill = "#ffffff" if b['is_current'] else color_of[b['name']]
+            canvas.create_text(x, header_y, text=header, fill=fill, font=("微软雅黑", 11, "bold"))
+
+        # 分支主干线
+        for b in branches:
+            bn = [n for n in nodes if n['branch'] == b['name']]
+            if len(bn) < 2:
+                continue
+            x = left + lane_of[b['name']] * lane_gap
+            canvas.create_line(x, bn[0]['y'], x, bn[-1]['y'],
+                               fill=color_of[b['name']], width=3 if b['is_current'] else 2)
+
+        # 分叉连线：父分支基线版本节点 → 子分支首个节点（平滑曲线）
+        for b in branches:
+            base = b.get('base_ref')
+            if not base:
+                continue
+            parent = next((n for n in nodes if n['branch'] == base['branch'] and n['version'] == base['version']), None)
+            child = next((n for n in nodes if n['branch'] == b['name']), None)
+            if not parent or not child:
+                continue
+            mid_y = parent['y'] + (child['y'] - parent['y']) * 0.5
+            canvas.create_line(parent['x'], parent['y'], parent['x'], mid_y, child['x'], child['y'],
+                               smooth=True, fill=color_of[b['name']], width=2)
+
+        # 版本节点 + 标签
+        for n in nodes:
+            x, y = n['x'], n['y']
+            color = color_of[n['branch']]
+            cur = is_current[n['branch']]
+            if n['info'] is None:
+                canvas.create_oval(x - 5, y - 5, x + 5, y + 5, outline=color, width=2)
+                canvas.create_text(x + 12, y, text="尚未归档（分支创建点）", fill="#9e9e9e",
+                                   font=("微软雅黑", 10), anchor="w")
+                continue
+            v = n['info']
+            r = 7 if cur else 6
+            oid = canvas.create_oval(x - r, y - r, x + r, y + r, fill=color,
+                                     outline="#ffffff" if cur else color, width=1)
+            label = f"v{v['version']}"
+            if v['tags']:
+                tag_text = '、'.join(v['tags'])
+                if len(tag_text) > 8:
+                    tag_text = tag_text[:7] + "…"
+                label += f" [{tag_text}]"
+            canvas.create_text(x + 14, y, text=label, fill="#f0f0f0", font=("微软雅黑", 10), anchor="w")
+            detail = {'branch': n['branch'], 'version': v['version'], 'time': v['time'],
+                      'tags': v['tags'], 'description': v['description']}
+            canvas.tag_bind(oid, "<Button-1>", lambda e, d=detail: self._show_graph_node_detail(d))
+            canvas.tag_bind(oid, "<Enter>", lambda e: canvas.configure(cursor="hand2"))
+            canvas.tag_bind(oid, "<Leave>", lambda e: canvas.configure(cursor=""))
+
+        width = max(left + len(branches) * lane_gap + 30, 700)
+        height = max(top + len(nodes) * row_h + 20, 400)
+        canvas.configure(scrollregion=(0, 0, width, height))
+
+    def _show_graph_node_detail(self, info):
+        """弹窗展示分支图谱中某个版本节点的详情（说明渲染 Markdown）"""
+        win = Toplevel(self.root)
+        win.title(f"分支 {info['branch']} · 版本 {info['version']} 详情")
+        win.geometry("620x480")
+        win.resizable(True, True)
+        win.transient(self.root)
+        win.focus_set()
+
+        meta = ttk.Frame(win)
+        meta.pack(fill="x", padx=20, pady=(15, 0))
+        rows = [
+            ("分支", info['branch']),
+            ("版本号", f"v{info['version']}"),
+            ("时间", info['time'] or "-"),
+            ("标签", "、".join(info['tags']) if info['tags'] else "无"),
+        ]
+        for i, (k, val) in enumerate(rows):
+            ttk.Label(meta, text=f"{k}：", font=("微软雅黑", 11, "bold")).grid(row=i, column=0, sticky="ne", padx=(0, 8), pady=2)
+            ttk.Label(meta, text=val, font=("微软雅黑", 11)).grid(row=i, column=1, sticky="w", pady=2)
+
+        ttk.Label(win, text="存档说明：", font=("微软雅黑", 11, "bold")).pack(fill="x", padx=20, pady=(10, 2))
+        desc = (info.get('description') or '').strip()
+        if desc:
+            html = markdown.markdown(desc, extensions=['tables', 'fenced_code', 'nl2br'])
+            view = HTMLScrolledText(win, html=html)
+            view.pack(fill="both", expand=True, padx=20, pady=(0, 15))
+        else:
+            ttk.Label(win, text="无说明", bootstyle="secondary").pack(anchor="w", padx=20)
     
     def monitor_thread(self):
         while self.monitoring:

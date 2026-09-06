@@ -559,3 +559,26 @@ class VersionControl:
                 'is_current': name == current
             })
         return result
+
+    def get_branch_graph(self):
+        """获取全部分支的版本图谱数据（用于绘制分支历史图），各分支版本按版本号升序"""
+        manifest = self._load_manifest()
+        current = manifest.get('current_branch', 'main')
+        branches = []
+        for name, data in manifest['branches'].items():
+            branches.append({
+                'name': name,
+                'is_current': name == current,
+                'base_ref': data.get('base_ref'),
+                'created_time': data.get('created_time', ''),
+                'versions': [
+                    {
+                        'version': v['version'],
+                        'time': v.get('time', ''),
+                        'tags': list(v.get('tags', [])),
+                        'description': v.get('description', '') or ''
+                    }
+                    for v in sorted(data.get('versions', []), key=lambda x: x['version'])
+                ]
+            })
+        return branches
