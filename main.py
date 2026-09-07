@@ -836,7 +836,7 @@ class VersionControlApp:
         tree.bind("<Double-1>", lambda event: confirm())
 
     def show_branch_history(self):
-        """弹窗展示分支历史图谱（类 Git 分支图：分支按列、版本按时间纵向排列、分叉处连线）"""
+        """弹窗展示分支历史图谱（类 Git 分支图：分支按列、版本较新在上、连线按继承关系）"""
         if not self.vc:
             self.msg_label.config(text="请先选择工作目录")
             return
@@ -858,7 +858,7 @@ class VersionControlApp:
         ttk.Button(btn_frame, text="刷新", command=refresh, bootstyle="info", width=10).pack(side="right", padx=10)
         ttk.Button(btn_frame, text="关闭", command=win.destroy, bootstyle="secondary", width=10).pack(side="right", padx=2)
 
-        hint_label = ttk.Label(win, text="每列代表一个分支，节点为该分支的归档版本（空心为尚未归档的分支创建点），按时间自上而下排列；当前分支加粗高亮，点击节点可查看版本详情。",
+        hint_label = ttk.Label(win, text="每列代表一个分支，节点为该分支的归档版本（空心为尚未归档的分支创建点），较新版本在上、较早版本在下；连线表示版本间的继承关系：同列弧线为恢复旧版本后存档的跳跃继承，跨列曲线为分支分叉来源；当前分支加粗高亮，点击节点可查看版本详情。",
                                bootstyle="info", wraplength=860, justify="left")
         hint_label.pack(pady=(12, 4), padx=20, anchor="w")
 
@@ -889,7 +889,8 @@ class VersionControlApp:
         win.bind("<Destroy>", on_destroy)
 
     def _draw_branch_graph(self, canvas):
-        """在 Canvas 上绘制类 Git 分支图：分支为列、版本节点按时间纵向排列、分叉处平滑连线"""
+        """在 Canvas 上绘制类 Git 分支图：分支为列、版本节点较新在上、较早在下；
+        连线严格按版本继承关系绘制（同列直线/弧线、跨列平滑曲线）"""
         canvas.delete("all")
         branches = self.vc.get_branch_graph()
         if not branches:
@@ -906,22 +907,29 @@ class VersionControlApp:
         lane_of = {b['name']: i for i, b in enumerate(branches)}
         color_of = {b['name']: self.GRAPH_COLORS[i % len(self.GRAPH_COLORS)] for i, b in enumerate(branches)}
         is_current = {b['name']: b['is_current'] for b in branches}
+        base_of = {b['name']: b.get('base_ref') for b in branches}
 
-        # 收集节点：各分支版本 + 未归档分支的占位节点（分支创建点），按时间全局排序
+        # 收集节点：各分支版本 + 未归档分支的占位节点（分支创建点），按时间降序（较新在上，缺失时间置底）
         nodes = []
         for b in branches:
             lane = lane_of[b['name']]
             if b['versions']:
                 for v in b['versions']:
-                    nodes.append({'time': v['time'] or '9999', 'lane': lane, 'version': v['version'],
+                    nodes.append({'time': v['time'] or '0000', 'lane': lane, 'version': v['version'],
                                   'branch': b['name'], 'info': v})
             else:
-                nodes.append({'time': b['created_time'] or '9999', 'lane': lane, 'version': 0,
+                nodes.append({'time': b['created_time'] or '0000', 'lane': lane, 'version': 0,
                               'branch': b['name'], 'info': None})
-        nodes.sort(key=lambda n: (n['time'], n['lane'], n['version']))
+        nodes.sort(key=lambda n: (n['time'], n['lane'], n['version']), reverse=True)
         for i, n in enumerate(nodes):
+            n['row'] = i
             n['x'] = left + n['lane'] * lane_gap
             n['y'] = top + i * row_h
+
+        node_index = {(n['branch'], n['version']): n for n in nodes}
+        rows_by_branch = {}
+        for n in nodes:
+            rows_by_branch.setdefault(n['branch'], []).append(n['row'])
 
         # 列表头：分支名称（当前分支高亮）
         for b in branches:
@@ -931,27 +939,40 @@ class VersionControlApp:
             fill = "#ffffff" if b['is_current'] else color_of[b['name']]
             canvas.create_text(x, header_y, text=header, fill=fill, font=("微软雅黑", 11, "bold"))
 
-        # 分支主干线
-        for b in branches:
-            bn = [n for n in nodes if n['branch'] == b['name']]
-            if len(bn) < 2:
-                continue
-            x = left + lane_of[b['name']] * lane_gap
-            canvas.create_line(x, bn[0]['y'], x, bn[-1]['y'],
-                               fill=color_of[b['name']], width=3 if b['is_current'] else 2)
+        # 继承连线：父版本节点 → 子版本节点（父在下、子在上）
+        def draw_edge(pnode, cnode):
+            """同分支相邻版本间为垂直直线；跳跃继承（如恢复旧版本后存档）为向列左侧外拱的弧线；
+            跨分支继承（分支分叉）为平滑曲线"""
+            color = color_of[cnode['branch']]
+            width = 3 if is_current[cnode['branch']] else 2
+            if pnode['branch'] == cnode['branch']:
+                x = cnode['x']
+                # 父子节点行间是否存在同分支的其他版本节点（被跳过的版本）
+                skipped = any(cnode['row'] < r < pnode['row'] for r in rows_by_branch[cnode['branch']])
+                if not skipped:
+                    canvas.create_line(x, pnode['y'], x, cnode['y'], fill=color, width=width)
+                else:
+                    mid_y = (pnode['y'] + cnode['y']) / 2
+                    canvas.create_line(x, pnode['y'], x - 16, mid_y, x, cnode['y'],
+                                       smooth=True, fill=color, width=width)
+            else:
+                mid_y = pnode['y'] + (cnode['y'] - pnode['y']) * 0.5
+                canvas.create_line(pnode['x'], pnode['y'], pnode['x'], mid_y, cnode['x'], cnode['y'],
+                                   smooth=True, fill=color, width=width)
 
-        # 分叉连线：父分支基线版本节点 → 子分支首个节点（平滑曲线）
-        for b in branches:
-            base = b.get('base_ref')
-            if not base:
+        for n in nodes:
+            if n['info'] is None:
+                # 未归档分支的占位节点：从分支基线版本引出连线
+                base = base_of.get(n['branch'])
+                if not base:
+                    continue
+                pnode = node_index.get((base.get('branch'), base.get('version')))
+            else:
+                parent = n['info'].get('parent') or {}
+                pnode = node_index.get((parent.get('branch'), parent.get('version')))
+            if pnode is None or pnode is n:
                 continue
-            parent = next((n for n in nodes if n['branch'] == base['branch'] and n['version'] == base['version']), None)
-            child = next((n for n in nodes if n['branch'] == b['name']), None)
-            if not parent or not child:
-                continue
-            mid_y = parent['y'] + (child['y'] - parent['y']) * 0.5
-            canvas.create_line(parent['x'], parent['y'], parent['x'], mid_y, child['x'], child['y'],
-                               smooth=True, fill=color_of[b['name']], width=2)
+            draw_edge(pnode, n)
 
         # 版本节点 + 标签
         for n in nodes:

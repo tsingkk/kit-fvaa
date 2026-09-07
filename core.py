@@ -43,7 +43,8 @@ class VersionControl:
             },
             'current_branch': 'main',
             'operation_log': [],
-            'pending_desc': ''
+            'pending_desc': '',
+            'workdir_base': None
         }
 
     def _load_manifest(self):
@@ -241,6 +242,16 @@ class VersionControl:
                 src = os.path.join(self.work_dir, path)
                 shutil.copy2(src, dest)
 
+        # 本版本的继承来源：工作目录当前基于的版本快照（存档/恢复/切换分支时更新）
+        if 'workdir_base' in manifest:
+            parent = manifest['workdir_base']
+        elif prev_version:
+            # 旧 manifest 无该字段：回退推断为本分支上一版本
+            parent = {'branch': branch, 'version': prev_version['version']}
+        else:
+            # 分支首个版本：继承分支创建时的基线
+            parent = branch_data.get('base_ref')
+
         version_info = {
             'version': version,
             'branch': branch,
@@ -248,10 +259,13 @@ class VersionControl:
             'description': description,
             'diff': diff,
             'files': current_files,
-            'tags': []
+            'tags': [],
+            'parent': parent
         }
         branch_data['versions'].append(version_info)
         branch_data['next_version'] += 1
+        # 存档后工作目录基于新建的版本
+        manifest['workdir_base'] = {'branch': branch, 'version': version}
 
         with open(self.manifest_path, 'w', encoding='utf-8') as f:
             json.dump(manifest, f, indent=2, ensure_ascii=False)
@@ -450,6 +464,10 @@ class VersionControl:
         with open(self.cache_path, 'w', encoding='utf-8') as f:
             json.dump(files, f, indent=2)
         
+        # 恢复后工作目录基于被恢复的版本快照，之后的存档将继承该版本
+        manifest['workdir_base'] = {'branch': branch, 'version': version}
+        self._save_manifest(manifest)
+        
         # 记录操作历史
         self.record_operation('restore', version)
         
@@ -514,6 +532,7 @@ class VersionControl:
             success, msg, files = self._restore_snapshot(latest, name)
             if not success:
                 return False, msg
+            new_base = {'branch': name, 'version': latest['version']}
         else:
             # 尚未归档的分支：恢复创建时的基线快照
             files = {}
@@ -527,16 +546,20 @@ class VersionControl:
                 success, msg, files = self._restore_snapshot(base_info, base_ref['branch'])
                 if not success:
                     return False, msg
+                new_base = dict(base_ref)
             else:
                 # 无基线快照时清空工作目录
                 deleted_count, failed_path = self._clear_workdir()
                 if deleted_count == -1:
                     return False, f"删除文件失败：{failed_path}，请关闭占用该文件的程序后重试"
+                new_base = None
         
         with open(self.cache_path, 'w', encoding='utf-8') as f:
             json.dump(files, f, indent=2)
         
         manifest['current_branch'] = name
+        # 工作目录已恢复为该分支的状态，其基于的版本快照相应更新
+        manifest['workdir_base'] = new_base
         self._save_manifest(manifest)
         
         # 记录操作历史（归属切换后的分支）
@@ -561,24 +584,33 @@ class VersionControl:
         return result
 
     def get_branch_graph(self):
-        """获取全部分支的版本图谱数据（用于绘制分支历史图），各分支版本按版本号升序"""
+        """获取全部分支的版本图谱数据（用于绘制分支历史图），各分支版本按版本号升序；
+        每个版本带 parent（{'branch', 'version'} 或 None）表示其继承来源，
+        旧数据无继承记录时按线性回退推断：分支首个版本继承分叉点，其余继承前一版本"""
         manifest = self._load_manifest()
         current = manifest.get('current_branch', 'main')
         branches = []
         for name, data in manifest['branches'].items():
+            base_ref = data.get('base_ref')
+            graph_versions = []
+            prev_version = None
+            for v in sorted(data.get('versions', []), key=lambda x: x['version']):
+                parent = v.get('parent')
+                if not parent:
+                    parent = base_ref if prev_version is None else {'branch': name, 'version': prev_version}
+                graph_versions.append({
+                    'version': v['version'],
+                    'time': v.get('time', ''),
+                    'tags': list(v.get('tags', [])),
+                    'description': v.get('description', '') or '',
+                    'parent': parent
+                })
+                prev_version = v['version']
             branches.append({
                 'name': name,
                 'is_current': name == current,
-                'base_ref': data.get('base_ref'),
+                'base_ref': base_ref,
                 'created_time': data.get('created_time', ''),
-                'versions': [
-                    {
-                        'version': v['version'],
-                        'time': v.get('time', ''),
-                        'tags': list(v.get('tags', [])),
-                        'description': v.get('description', '') or ''
-                    }
-                    for v in sorted(data.get('versions', []), key=lambda x: x['version'])
-                ]
+                'versions': graph_versions
             })
         return branches
