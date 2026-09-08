@@ -307,6 +307,13 @@ class VersionControl:
         # 旧版本记录无 branch 字段，视为 main 分支
         return [log for log in logs if log.get('branch', 'main') == branch]
 
+    def tag_exists(self, tag_name):
+        """判断标签在当前分支内是否已存在"""
+        manifest = self._load_manifest()
+        branch = manifest.get('current_branch', 'main')
+        branch_data = manifest['branches'].get(branch)
+        return bool(branch_data) and tag_name in branch_data.get('tags', {})
+
     def add_tag(self, version, tag_name):
         """给当前分支的指定版本添加标签"""
         manifest = self._load_manifest()

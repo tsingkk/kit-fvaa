@@ -64,6 +64,7 @@ class VersionControlApp:
         self.vc = None
         self.work_dir = ""
         self.monitoring = False
+        self.tag_edit_entry = None  # 版本历史“标签”列的原位输入框
         
         # 标题
         header_frame = ttk.Frame(root)
@@ -100,34 +101,25 @@ class VersionControlApp:
         self.desc_btn = ttk.Button(btn_frame, text="编辑存档说明", command=self.show_archive_input, bootstyle="info", width=12)
         self.desc_btn.pack(side="left", padx=2)
         
-        self.archive_btn = ttk.Button(btn_frame, text="一键存档", command=self.create_archive, bootstyle="success", width=8)
+        self.archive_btn = ttk.Button(btn_frame, text="存档", command=self.create_archive, bootstyle="success", width=8)
         self.archive_btn.pack(side="left", padx=2)
         
         self.restore_btn = ttk.Button(btn_frame, text="恢复版本", command=self.restore_version, bootstyle="warning", width=8)
         self.restore_btn.pack(side="left", padx=2)
         
-        ttk.Label(btn_frame, text="标签:").pack(side="left", padx=2)
-        self.tag_entry = ttk.Entry(btn_frame, width=10)
-        self.tag_entry.pack(side="left", padx=2)
-        self.tag_btn = ttk.Button(btn_frame, text="添加标签", command=self.add_tag, bootstyle="info", width=8)
-        self.tag_btn.pack(side="left", padx=2)
-        
-        self.branch_create_btn = ttk.Button(btn_frame, text="创建分支", command=self.create_branch, bootstyle="secondary", width=8)
+        self.branch_create_btn = ttk.Button(btn_frame, text="创建分支", command=self.create_branch, bootstyle="primary", width=8)
         self.branch_create_btn.pack(side="left", padx=2)
         
-        self.branch_switch_btn = ttk.Button(btn_frame, text="切换分支", command=self.switch_branch, bootstyle="secondary", width=8)
+        self.branch_switch_btn = ttk.Button(btn_frame, text="切换分支", command=self.switch_branch, bootstyle="primary", width=8)
         self.branch_switch_btn.pack(side="left", padx=2)
 
-        self.branch_history_btn = ttk.Button(btn_frame, text="分支历史", command=self.show_branch_history, bootstyle="secondary", width=8)
+        self.branch_history_btn = ttk.Button(btn_frame, text="分支历史", command=self.show_branch_history, bootstyle="primary", width=8)
         self.branch_history_btn.pack(side="left", padx=2)
 
         self.minimize_to_tray_var = tk.BooleanVar(value=self.config.get('minimize_to_tray', False))
         self.tray_checkbox = ttk.Checkbutton(btn_frame, text="最小化至状态栏", variable=self.minimize_to_tray_var, bootstyle="info-round-toggle", command=self.save_config)
         self.tray_checkbox.pack(side="right", padx=10)
         
-        self.tag_msg_label = ttk.Label(btn_frame, text="", bootstyle="danger", font=("微软雅黑", 10, "bold"))
-        self.tag_msg_label.pack(side="left", padx=5)
-
         self.root.bind("<Unmap>", self.on_window_unmap)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close_app)
         self.tray_icon_created = False
@@ -215,8 +207,10 @@ class VersionControlApp:
         # 横向+竖向滚动条（高亮样式）
         version_yscroll = ttk.Scrollbar(version_inner_frame, orient="vertical", command=self.version_tree.yview, style="Custom.Vertical.TScrollbar")
         version_xscroll = ttk.Scrollbar(version_inner_frame, orient="horizontal", command=self.version_tree.xview, style="Custom.Horizontal.TScrollbar")
-        # 绑定滚动
-        self.version_tree.configure(yscrollcommand=version_yscroll.set, xscrollcommand=version_xscroll.set)
+        # 绑定滚动（滚动时销毁原位标签输入框，避免浮层与单元格错位）
+        self._version_yscroll_set = version_yscroll.set
+        self._version_xscroll_set = version_xscroll.set
+        self.version_tree.configure(yscrollcommand=self._on_tree_yscroll, xscrollcommand=self._on_tree_xscroll)
         self.version_tree.grid(row=0, column=0, sticky="nsew")
         version_yscroll.grid(row=0, column=1, sticky="ns")
         version_xscroll.grid(row=1, column=0, sticky="ew")
@@ -263,57 +257,99 @@ class VersionControlApp:
                 lines.append(f"- {path}")
         return "\n".join(lines)
 
-    def merge_status_block(self, desc):
-        """将最新的文件状态清单填入说明顶部，并替换旧的自动生成清单"""
-        block = self.build_status_block()
+    def strip_status_block(self, desc):
+        """剥离说明中的自动生成状态清单块，返回纯用户文字"""
         body = desc or ""
         start = body.find(self.STATUS_BLOCK_START)
         if start != -1:
             end = body.find(self.STATUS_BLOCK_END, start)
             body = body[:start] + (body[end + len(self.STATUS_BLOCK_END):] if end != -1 else "")
             body = body.strip("\n")
+        return body
+
+    def merge_status_block(self, desc):
+        """将最新的文件状态清单附加到说明顶部（先剥离旧清单块）"""
+        block = self.build_status_block()
+        body = self.strip_status_block(desc)
         if not block:
             return body
         block = f"{self.STATUS_BLOCK_START}\n{block}\n{self.STATUS_BLOCK_END}"
         return f"{block}\n\n{body}" if body else block
 
     def show_archive_input(self, archive_mode=False):
-        """弹出存档说明编辑窗口；archive_mode 为 True 时（一键存档流程）点击“保存”后才执行存档"""
-        content = self.merge_status_block(self.archive_desc)
-        has_status = content.startswith(self.STATUS_BLOCK_START)
+        """弹出存档说明编辑窗口；archive_mode 为 True 时（存档流程）点击“保存”后才执行存档。
+        上栏只读展示文件状态清单，下方为存档说明输入框（存档模式下再下方为标签输入行）"""
+        status_block = self.build_status_block()
+        user_desc = self.strip_status_block(self.archive_desc)
 
         win = Toplevel(self.root)
         win.title("编辑存档说明")
-        win.geometry("600x500")
+        win.geometry("620x650")
         win.focus_set()
         win.resizable(True, True)
         if archive_mode:
             win.transient(self.root)
             win.grab_set()
-        
+         
         # 顶部提示语
-        if has_status:
-            hint_text = "已自动填入当前目录的文件状态清单（删除、新增、修改），可在其后补充备注；一键存档时将与存档版本绑定，方便后期查阅！"
-        else:
-            hint_text = "请记录当前目录中的文件修改情况，一键存档时将与存档版本绑定，方便后期查阅！"
-        hint_label = ttk.Label(win, text=hint_text, bootstyle="info", wraplength=550)
+        hint_text = "上方只读显示当前目录的文件状态清单（每次打开自动更新），存档时将自动附加到存档说明顶部随版本保存；请在下方输入存档说明！"
+        hint_label = ttk.Label(win, text=hint_text, bootstyle="info", wraplength=560)
         hint_label.pack(pady=(15, 5), padx=20, fill="x", side="top")
 
         # 底部按钮栏 (先pack side="bottom" 确保即使窗口缩小也始终可见)
         btn_frame = ttk.Frame(win)
         btn_frame.pack(fill="x", side="bottom", pady=15, padx=20)
-        
+
+        # 标签输入行（仅存档流程显示，位于说明输入框与按钮栏之间）
+        tag_entry = None
+        if archive_mode:
+            tag_frame = ttk.Frame(win)
+            tag_frame.pack(fill="x", side="bottom", padx=20, pady=(0, 5))
+            ttk.Label(tag_frame, text="标签:").pack(side="left", padx=(0, 5))
+            tag_entry = ttk.Entry(tag_frame, width=30)
+            tag_entry.pack(side="left", fill="x", expand=True)
+            ttk.Label(tag_frame, text="（留空则不添加标签）", bootstyle="secondary").pack(side="left", padx=5)
+
+        # 上栏：文件状态清单（只读，渲染 Markdown；无变更时显示占位）
+        status_frame = ttk.Frame(win)
+        status_frame.pack(fill="x", padx=20, pady=(0, 5), side="top")
+        ttk.Label(status_frame, text="文件状态清单：").pack(anchor="w")
+        status_html = markdown.markdown(status_block or "*当前无文件变更*", extensions=['tables', 'fenced_code', 'nl2br'])
+        status_view = HTMLScrolledText(status_frame, html=status_html, height=8)
+        status_view.pack(fill="x")
+        status_view.configure(state="disabled")
+
+        # 中/下栏：存档说明输入框（fill="both" 占用剩余空间）
+        desc_frame = ttk.Frame(win)
+        desc_frame.pack(fill="both", expand=True, padx=20, pady=5)
+        ttk.Label(desc_frame, text="存档说明：").pack(anchor="w")
+        desc_inner = ttk.Frame(desc_frame)
+        desc_inner.pack(fill="both", expand=True)
+        text = Text(desc_inner, wrap=tk.WORD, font=("微软雅黑", 12), undo=True)
+        scroll = Scrollbar(desc_inner, command=text.yview)
+        text.configure(yscrollcommand=scroll.set)
+        text.insert("end", user_desc)
+        text.mark_set("insert", "end")
+        text.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+
         def save_desc():
             desc_text = text.get("1.0", "end-1c")
             if archive_mode and not desc_text.strip():
                 messagebox.showwarning("存档说明", "存档说明不能为空，无法存档，请输入内容后再保存", parent=win)
                 return
+            tag_name = ""
+            if archive_mode and tag_entry is not None:
+                tag_name = tag_entry.get().strip()
+                if tag_name and self.vc and self.vc.tag_exists(tag_name):
+                    messagebox.showwarning("标签已存在", f"标签 “{tag_name}” 在当前分支已存在，请修改标签或清空后再保存", parent=win)
+                    return
             self.archive_desc = desc_text
             if self.vc:
                 self.vc.save_pending_desc(self.archive_desc)
             win.destroy()
             if archive_mode:
-                self._do_archive()
+                self._do_archive(tag_name)
             else:
                 self.msg_label.config(text="存档说明已保存")
         
@@ -336,19 +372,6 @@ class VersionControlApp:
         ttk.Button(btn_frame, text="放弃", command=cancel, bootstyle="secondary", width=12).pack(side="right", padx=10)
         win.protocol("WM_DELETE_WINDOW", on_close)
 
-        # 中间文本输入框 (最后pack fill="both" 占用剩余空间)
-        text_frame = ttk.Frame(win)
-        text_frame.pack(fill="both", expand=True, padx=20, pady=5)
-        
-        text = Text(text_frame, wrap=tk.WORD, font=("微软雅黑", 12), undo=True)
-        scroll = Scrollbar(text_frame, command=text.yview)
-        text.configure(yscrollcommand=scroll.set)
-        text.insert("end", content)
-        text.mark_set("insert", "end")
-        
-        text.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
-    
     def show_ignore_input(self):
         """弹出忽视文件编辑窗口"""
         if not self.vc:
@@ -418,6 +441,9 @@ class VersionControlApp:
         if col == "#4":  # 点击文件清单列，弹出文件取回窗口
             version_num = int(self.version_tree.item(item, "values")[0])
             self.show_version_files(version_num)
+            return
+        if col == "#5":  # 点击标签列，为无标签的版本原位添加标签
+            self._start_tag_edit(item)
             return
         if col != "#3": # 仅点击说明列才触发
             return
@@ -592,7 +618,7 @@ class VersionControlApp:
         self.dir_entry.set(dir_path)
         self.add_recent_dir(dir_path)
         self.vc = VersionControl(dir_path)
-        self.archive_desc = self.vc.get_pending_desc()
+        self.archive_desc = self.strip_status_block(self.vc.get_pending_desc())
         self.refresh_branch_label()
         self.refresh_status()
         self.refresh_versions()
@@ -643,27 +669,33 @@ class VersionControlApp:
     def refresh_versions(self):
         if not self.vc:
             return
+        self._destroy_tag_edit()
         for item in self.version_tree.get_children():
             self.version_tree.delete(item)
         
         versions = self.vc.get_versions()
         for v in versions:
-            tags = ','.join(v.get('tags', []))
+            tags = ','.join(v.get('tags', [])) or "添加标签"
             desc = v['description'] or "无说明"
             show_desc = "点击查看" if desc.strip() else "无说明"
             self.version_tree.insert("", "end", values=(v['version'], v['time'], show_desc, "点击查看", tags), tags=(desc,))
     
     def create_archive(self):
-        """一键存档：先弹出存档说明编辑窗口，点击弹窗中的“保存”后才执行存档"""
+        """存档：先弹出存档说明编辑窗口，点击弹窗中的“保存”后才执行存档"""
         if not self.vc:
             self.msg_label.config(text="请先选择工作目录")
             return
         self.show_archive_input(archive_mode=True)
 
-    def _do_archive(self):
-        """执行存档并刷新界面（存档说明已在前置弹窗中确认）"""
-        desc = self.archive_desc
+    def _do_archive(self, tag=""):
+        """执行存档并刷新界面（存档说明已在前置弹窗中确认；tag 非空时为该版本打上标签）
+        存档时将最新的文件状态清单附加到说明顶部随版本保存"""
+        desc = self.merge_status_block(self.archive_desc)
         version, msg = self.vc.create_archive(desc)
+        if version and tag:
+            tag_ok, tag_msg = self.vc.add_tag(version['version'], tag)
+            if not tag_ok:
+                msg += f"（标签添加失败：{tag_msg}）"
         self.msg_label.config(text=msg)
         if version:
             self.refresh_versions()
@@ -688,26 +720,63 @@ class VersionControlApp:
             self.refresh_status()
             self.refresh_operation_log()
     
-    def add_tag(self):
-        self.tag_msg_label.config(text="")
+    def _destroy_tag_edit(self):
+        """销毁版本历史“标签”列的原位输入框（幂等）"""
+        if self.tag_edit_entry is not None:
+            try:
+                self.tag_edit_entry.destroy()
+            except Exception:
+                pass
+            self.tag_edit_entry = None
+
+    def _on_tree_yscroll(self, first, last):
+        self._destroy_tag_edit()
+        self._version_yscroll_set(first, last)
+
+    def _on_tree_xscroll(self, first, last):
+        self._destroy_tag_edit()
+        self._version_xscroll_set(first, last)
+
+    def _start_tag_edit(self, item):
+        """在无标签版本的“标签”列单元格原位创建输入框：回车保存并关联版本，Esc/失焦取消"""
+        self._destroy_tag_edit()
         if not self.vc:
-            self.msg_label.config(text="请先选择工作目录")
             return
-        selected = self.version_tree.selection()
-        if not selected:
-            self.tag_msg_label.config(text="请现在版本历史中选择要打标签的版本！")
-            self.root.after(3000, lambda: self.tag_msg_label.config(text=""))
-            return
-        tag_name = self.tag_entry.get().strip()
-        if not tag_name:
-            self.msg_label.config(text="请输入标签名称")
-            return
-        version_num = int(self.version_tree.item(selected[0])['values'][0])
-        success, msg = self.vc.add_tag(version_num, tag_name)
-        self.msg_label.config(text=msg)
-        if success:
-            self.refresh_versions()
-            self.tag_entry.delete(0, "end")
+        version_num = int(self.version_tree.item(item, "values")[0])
+        version_info = self.vc.get_version_info(version_num)
+        if not version_info or version_info.get('tags'):
+            return  # 已有标签的版本直接显示标签，不提供添加入口
+        bbox = self.version_tree.bbox(item, column="#5")
+        if not bbox:
+            return  # 单元格不可见时无法原位编辑
+        x, y, width, height = bbox
+
+        entry = ttk.Entry(self.version_tree)
+        entry.place(x=x + 2, y=y + 2, width=width - 4, height=height - 4)
+        self.tag_edit_entry = entry
+        entry.focus_set()
+
+        def confirm(event=None):
+            tag_name = entry.get().strip()
+            if not tag_name:
+                self._destroy_tag_edit()  # 空输入视为取消
+                return
+            success, msg = self.vc.add_tag(version_num, tag_name)
+            if success:
+                self._destroy_tag_edit()
+                self.msg_label.config(text=msg)
+                self.refresh_versions()
+            else:
+                # 重名等错误：消息栏提示，输入框保留供修改后重试
+                self.msg_label.config(text=msg)
+                entry.focus_set()
+
+        def cancel(event=None):
+            self._destroy_tag_edit()
+
+        entry.bind("<Return>", confirm)
+        entry.bind("<Escape>", cancel)
+        entry.bind("<FocusOut>", cancel)
     
     def create_branch(self):
         """创建分支：无变更文件时弹窗输入分支名称并创建（自动切换到新分支）"""
