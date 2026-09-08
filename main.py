@@ -46,10 +46,7 @@ PALETTE = {
     "st_added":     "#7FBF7F",
     "st_deleted":   "#C97A7A",
     "st_modified":  "#D9B36B",
-    # 操作历史行底色（按操作类型）
-    "op_archive": "#2E3A32",   # 存档
-    "op_switch":  "#2A3440",   # 切换分支
-    "op_restore": "#2E3A3A",   # 恢复版本
+    # 操作历史行底色（按操作类型；存档/恢复/切换与对应按钮同色，见 op_tree tag 配置）
     "op_create":  "#332E3D",   # 创建分支
 }
 
@@ -152,7 +149,7 @@ class VersionControlApp:
         dir_frame.pack(pady=5, fill="x", padx=10)
         
         ttk.Label(dir_frame, text="工作目录:").pack(side="left", padx=5)
-        self.dir_entry = ttk.Combobox(dir_frame, width=80, values=self.recent_dirs)
+        self.dir_entry = ttk.Combobox(dir_frame, width=80, values=self.recent_dirs, font=_font(13))
         self.dir_entry.pack(side="left", padx=5, fill="x", expand=True)
         self.dir_entry.bind("<<ComboboxSelected>>", self.on_combobox_select)
         self.dir_entry.bind("<Return>", self.on_combobox_select)
@@ -232,12 +229,12 @@ class VersionControlApp:
         op_xscroll.grid(row=1, column=0, sticky="ew")
         op_inner_frame.grid_rowconfigure(0, weight=1)
         op_inner_frame.grid_columnconfigure(0, weight=1)
-        # 按操作类型配置行底色
-        for tag, color in (("archive", PALETTE["op_archive"]),
-                           ("restore", PALETTE["op_restore"]),
-                           ("switch", PALETTE["op_switch"]),
-                           ("create", PALETTE["op_create"])):
-            self.op_tree.tag_configure(tag, background=color)
+        # 按操作类型配置行底色（存档/恢复/切换与对应按钮同色，文字色随按钮）
+        for tag, (bg, fg) in (("archive", PALETTE["btn_green"]),
+                              ("restore", PALETTE["btn_orange"]),
+                              ("switch", PALETTE["btn_blue"])):
+            self.op_tree.tag_configure(tag, background=bg, foreground=fg)
+        self.op_tree.tag_configure("create", background=PALETTE["op_create"])
         # 悬停提示显示完整记录（配合加宽面板，彻底避免信息丢失）
         self.op_tooltip = ToolTip(self.op_tree, self._op_tip_text)
         
@@ -1085,12 +1082,16 @@ class VersionControlApp:
         
         win = Toplevel(self.root)
         win.title("创建新分支")
-        win.geometry(f"{int(460 * self.ui_scale)}x{int(190 * self.ui_scale)}")
+        win.geometry(f"{int(460 * self.ui_scale)}x{int(250 * self.ui_scale)}")
         win.configure(background=PALETTE["bg"])
         win.transient(self.root)
         win.grab_set()
         win.resizable(False, False)
         win.focus_set()
+
+        # 底部按钮栏 (先pack side="bottom" 确保即使窗口缩小也始终可见)
+        btn_frame = ttk.Frame(win)
+        btn_frame.pack(side="bottom", pady=12)
         
         hint_label = tk.Label(win, text="以当前分支最新归档为基线创建新分支，新分支版本号从 1 开始独立递增，\n创建后自动切换到新分支。",
                               wraplength=int(420 * self.ui_scale), justify="left",
@@ -1127,10 +1128,8 @@ class VersionControlApp:
         def cancel():
             win.destroy()
         
-        btn_frame = ttk.Frame(win)
-        btn_frame.pack(side="bottom", pady=12)
         ttk.Button(btn_frame, text="创建", command=confirm, style="FVAA.Blue.TButton", width=10).pack(side="left", padx=10)
-        ttk.Button(btn_frame, text="取消", command=cancel, style="FVAA.Gray.TButton", width=10).pack(side="left", padx=10)
+        ttk.Button(btn_frame, text="放弃", command=cancel, style="FVAA.Gray.TButton", width=10).pack(side="left", padx=10)
         entry.bind("<Return>", confirm)
         entry.focus_set()
     
@@ -1150,12 +1149,16 @@ class VersionControlApp:
         
         win = Toplevel(self.root)
         win.title("切换分支")
-        win.geometry(f"{int(560 * self.ui_scale)}x{int(380 * self.ui_scale)}")
+        win.geometry(f"{int(560 * self.ui_scale)}x{int(500 * self.ui_scale)}")
         win.configure(background=PALETTE["bg"])
         win.transient(self.root)
         win.grab_set()
         win.focus_set()
         
+        # 底部按钮栏 (先pack side="bottom" 确保即使窗口缩小也始终可见)
+        btn_frame = ttk.Frame(win)
+        btn_frame.pack(side="bottom", pady=12)
+
         hint_label = tk.Label(win, text="请选择要切换到的分支（切换后工作目录文件将恢复为该分支最新归档）：",
                               wraplength=int(520 * self.ui_scale), justify="left",
                               font=_font(12), background=PALETTE["hint_bg"], foreground=PALETTE["hint_text"],
@@ -1202,8 +1205,6 @@ class VersionControlApp:
         def cancel():
             win.destroy()
         
-        btn_frame = ttk.Frame(win)
-        btn_frame.pack(side="bottom", pady=12)
         ttk.Button(btn_frame, text="切换", command=confirm, style="FVAA.Blue.TButton", width=10).pack(side="left", padx=10)
         ttk.Button(btn_frame, text="取消", command=cancel, style="FVAA.Gray.TButton", width=10).pack(side="left", padx=10)
         tree.bind("<Double-1>", lambda event: confirm())
