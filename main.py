@@ -8,7 +8,7 @@ import os
 import sys
 from core import VersionControl
 import threading
-import time
+import queue
 import json
 import win32gui
 import win32api
@@ -142,6 +142,14 @@ class VersionControlApp:
         self.monitoring = False
         self.tag_edit_entry = None  # 版本历史“标签”列的原位输入框
 
+        # 文件状态异步刷新：后台线程计算 diff，主线程 100ms 结果泵取回应用，
+        # 避免全量 MD5 扫描阻塞 UI 主循环（最小化恢复后文字滞后补画的根因）
+        self._status_scan_inflight = False
+        self._status_rescan_pending = False
+        self._status_rows_sig = None  # 上次应用到表格的行签名（内容未变时整表零操作）
+        self._scan_results = queue.Queue()
+        self._monitor_after_id = None
+
         # 标题
         header_frame = ttk.Frame(root)
         header_frame.pack(fill="x", pady=10)
@@ -199,6 +207,7 @@ class VersionControlApp:
         self.tray_checkbox.pack(side="right", padx=10)
 
         self.root.bind("<Unmap>", self.on_window_unmap)
+        self.root.bind("<Map>", self.on_root_map)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close_app)
         self.tray_icon_created = False
 
@@ -318,6 +327,9 @@ class VersionControlApp:
         for tag, (_, color) in self.status_tags.items():
             self.status_tree.tag_configure(tag, foreground=color)
 
+        # 主线程结果泵：取回后台扫描结果并应用（自调度，空转成本可忽略）
+        self.root.after(100, self._pump_status_results)
+
     def build_styles(self):
         """按 PALETTE 配置全局 ttk 样式（背景/表格/表头/按钮/滚动条/输入框）"""
         P = PALETTE
@@ -370,10 +382,20 @@ class VersionControlApp:
             style.map(name, background=[("active", _shade(P["header"], 0.1))])
 
         # 滚动条
-        for name in ("Custom.Vertical.TScrollbar", "Custom.Horizontal.TScrollbar"):
+        # 注意：ttkbootstrap 主题的滚动条滑块是“图片元素”，整窗重绘（最小化恢复等）
+        # 时每个约 160ms；改用 clam 原生 trough/thumb 元素布局（纯 C 绘制）规避。
+        # clam 元素的横向尺寸由 -arrowsize 驱动（无箭头布局下即轨道厚度），
+        # thumb 需 sticky=nswe 填满轨道
+        for name, trough_el, thumb_el in (
+            ("Custom.Vertical.TScrollbar", "Vertical.Scrollbar.trough", "Vertical.Scrollbar.thumb"),
+            ("Custom.Horizontal.TScrollbar", "Horizontal.Scrollbar.trough", "Horizontal.Scrollbar.thumb"),
+        ):
+            style.layout(name, [(trough_el, {"children": [
+                (thumb_el, {"expand": "1", "sticky": "nswe"})]})])
             style.configure(name, background=P["separator"], troughcolor=P["bg"],
                             bordercolor=P["bg"], arrowcolor=P["text"], gripcount=0,
-                            lightcolor=P["separator"], darkcolor=P["separator"])
+                            lightcolor=P["separator"], darkcolor=P["separator"],
+                            arrowsize=max(10, int(8 * s) + 2))
             style.map(name,
                       background=[("active", _shade(P["separator"], 0.15)),
                                   ("pressed", _shade(P["separator"], -0.15))],
@@ -913,6 +935,10 @@ class VersionControlApp:
         self.work_dir = dir_path
         self.dir_entry.set(dir_path)
         self.add_recent_dir(dir_path)
+        # 丢弃旧工作目录的在途扫描与表格签名，避免过期结果应用到新目录
+        self._status_scan_inflight = False
+        self._status_rescan_pending = False
+        self._status_rows_sig = None
         self.vc = VersionControl(dir_path)
         self.archive_desc = self.strip_status_block(self.vc.get_pending_desc())
         self.refresh_branch_label()
@@ -952,19 +978,68 @@ class VersionControlApp:
             self.op_tree.insert("", "end", values=(f"  {log['time']}  {op}",), tags=(tag,))
 
     def refresh_status(self):
+        """请求刷新文件状态：diff 计算在后台线程进行，结果经结果泵回主线程应用"""
         if not self.vc:
             return
-        for item in self.status_tree.get_children():
-            self.status_tree.delete(item)
+        if self._status_scan_inflight:
+            self._status_rescan_pending = True
+            return
+        self._status_scan_inflight = True
+        vc = self.vc
 
-        diff, _ = self.vc.get_diff()
+        def worker():
+            try:
+                diff, _ = vc.get_diff()
+            except Exception:
+                diff = None
+            self._scan_results.put((vc, diff))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _pump_status_results(self):
+        """主线程结果泵：应用后台扫描结果，避免工作线程直接触碰 Tk 控件"""
+        try:
+            while True:
+                vc, diff = self._scan_results.get_nowait()
+                self._apply_status(vc, diff)
+        except queue.Empty:
+            pass
+        self.root.after(100, self._pump_status_results)
+
+    def _apply_status(self, vc, diff):
+        """在主线程应用一次扫描结果：行内容未变化时整表零操作"""
+        if vc is self.vc:
+            self._status_scan_inflight = False
+        if diff is None or vc is not self.vc:
+            # 扫描失败或工作目录已切换：丢弃过期结果，等待下一轮刷新
+            if vc is self.vc and self._status_rescan_pending:
+                self._status_rescan_pending = False
+                self.refresh_status()
+            return
+
+        rows = []
         total_changes = 0
-        for status, paths in diff.items():
-            total_changes += len(paths) if status != 'unchanged' else 0
+        # 与 get_diff 的插入序一致：修改 → 新增 → 删除 → 不变
+        for status in ('modified', 'added', 'deleted', 'unchanged'):
+            paths = diff.get(status, [])
+            if status != 'unchanged':
+                total_changes += len(paths)
+            label = self.status_tags[status][0]
             for path in paths:
-                self.status_tree.insert("", "end", values=(self.status_tags[status][0], path), tags=(status,))
+                rows.append((label, path, status))
+
+        sig = tuple(rows)
+        if sig != self._status_rows_sig:
+            self._status_rows_sig = sig
+            for item in self.status_tree.get_children():
+                self.status_tree.delete(item)
+            for label, path, status in rows:
+                self.status_tree.insert("", "end", values=(label, path), tags=(status,))
 
         self.summary_label.config(text=f"共 {total_changes} 个变更，{len(diff['unchanged'])} 个文件未变更")
+        if self._status_rescan_pending:
+            self._status_rescan_pending = False
+            self.refresh_status()
 
     def refresh_versions(self):
         if not self.vc:
@@ -1421,10 +1496,15 @@ class VersionControlApp:
         else:
             ttk.Label(win, text="无说明", foreground=PALETTE["text_dim"]).pack(anchor="w", padx=20)
 
-    def monitor_thread(self):
-        while self.monitoring:
-            self.root.after(0, self.refresh_status)
-            time.sleep(2)
+    def _monitor_tick(self):
+        """主线程自调度的监视心跳（取代后台线程轮询，杜绝跨线程 after）；
+        窗口最小化/隐藏到托盘期间跳过本轮扫描，恢复显示时经 <Map> 立即补偿刷新"""
+        if not self.monitoring:
+            self._monitor_after_id = None
+            return
+        if self.root.state() not in ('iconic', 'withdrawn'):
+            self.refresh_status()
+        self._monitor_after_id = self.root.after(2000, self._monitor_tick)
 
     def toggle_monitor(self):
         if not self.vc:
@@ -1433,14 +1513,22 @@ class VersionControlApp:
         self.monitoring = not self.monitoring
         if self.monitoring:
             self.monitor_btn.configure(text="停止监视", style="FVAA.Red.TButton")
-            threading.Thread(target=self.monitor_thread, daemon=True).start()
+            self._monitor_tick()
         else:
             self.monitor_btn.configure(text="开始监视", style="FVAA.Teal.TButton")
+            if self._monitor_after_id:
+                self.root.after_cancel(self._monitor_after_id)
+                self._monitor_after_id = None
 
     def on_window_unmap(self, event):
         if event.widget == self.root and self.root.state() == 'iconic':
             if self.minimize_to_tray_var.get():
                 self.minimize_to_tray()
+
+    def on_root_map(self, event):
+        """窗口恢复显示（取消最小化/从托盘还原）时立即补偿一次文件状态刷新"""
+        if event.widget is self.root and self.monitoring:
+            self.refresh_status()
 
     def minimize_to_tray(self):
         self.root.withdraw()

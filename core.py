@@ -22,6 +22,8 @@ class VersionControl:
         self.manifest_path = os.path.join(self.fvaa_dir, 'manifest.json')
         self.cache_path = os.path.join(self.fvaa_dir, 'cache.json')
         self.default_exclude = ['.fvaa', '.git', 'node_modules', '__pycache__', '*.tmp', '*.log']
+        # 最近一次扫描的结果（rel_path -> {'hash','mtime','size'}），用于扫描时跳过未变文件的 MD5 重算
+        self._scan_baseline = {}
         self._init_fvaa()
 
     def _init_fvaa(self):
@@ -139,11 +141,11 @@ class VersionControl:
                 pass
         return excludes
 
-    def _is_excluded(self, path):
-        rel_path = os.path.relpath(path, self.work_dir)
+    @staticmethod
+    def _match_excludes(path, work_dir, excludes):
+        rel_path = os.path.relpath(path, work_dir)
         # Normalize slashes for generic matching
         rel_path_norm = rel_path.replace('\\', '/')
-        excludes = self.get_excludes()
         for ex in excludes:
             ex_norm = ex.replace('\\', '/').rstrip('/') # Remove trailing slash for matching
             if ex_norm.startswith('*'):
@@ -164,29 +166,50 @@ class VersionControl:
         except:
             return None
 
-    def scan_files(self):
+    def scan_files(self, baseline=None):
+        """扫描工作目录，返回 {相对路径: {'hash','mtime','size'}}。
+        baseline 提供上次已知状态（如 cache.json）时，mtime+size 均未变化的文件
+        直接复用其 hash 跳过 MD5 重算；内存级最近一次扫描结果始终参与短路"""
+        excludes = self.get_excludes()
         files = {}
         for root, dirs, filenames in os.walk(self.work_dir):
             # Prune excluded directories to avoid unnecessary recursion
-            dirs[:] = [d for d in dirs if not self._is_excluded(os.path.join(root, d))]
+            dirs[:] = [d for d in dirs if not self._match_excludes(os.path.join(root, d), self.work_dir, excludes)]
             for filename in filenames:
                 full_path = os.path.join(root, filename)
-                if self._is_excluded(full_path):
+                if self._match_excludes(full_path, self.work_dir, excludes):
                     continue
                 rel_path = os.path.relpath(full_path, self.work_dir)
-                file_hash = self._get_file_hash(full_path)
-                if file_hash:
-                    files[rel_path] = {
-                        'hash': file_hash,
-                        'mtime': os.path.getmtime(full_path),
-                        'size': os.path.getsize(full_path)
-                    }
+                try:
+                    st = os.stat(full_path)
+                    mtime, size = st.st_mtime, st.st_size
+                except OSError:
+                    continue
+                # 依次尝试内存基线与外部基线（如 cache.json）：
+                # mtime+size 均一致即可复用其 hash（前者覆盖“归档后又修改”的场景，
+                # 后者覆盖“恢复旧版本后 mtime 回退”的场景）
+                file_hash = None
+                for cand in (self._scan_baseline.get(rel_path), (baseline or {}).get(rel_path)):
+                    if cand and cand.get('mtime') == mtime and cand.get('size') == size:
+                        file_hash = cand.get('hash')
+                        break
+                if not file_hash:
+                    file_hash = self._get_file_hash(full_path)
+                    if not file_hash:
+                        continue
+                files[rel_path] = {
+                    'hash': file_hash,
+                    'mtime': mtime,
+                    'size': size
+                }
+        self._scan_baseline = files
         return files
 
     def get_diff(self):
         with open(self.cache_path, 'r', encoding='utf-8') as f:
             old_cache = json.load(f)
-        current_files = self.scan_files()
+        current_files = self.scan_files(baseline=old_cache)
+        excludes = self.get_excludes()
         diff = {
             'modified': [],
             'added': [],
@@ -203,7 +226,7 @@ class VersionControl:
         for path in old_cache:
             if path not in current_files:
                 # Do not report as deleted if it's currently excluded
-                if not self._is_excluded(os.path.join(self.work_dir, path)):
+                if not self._match_excludes(os.path.join(self.work_dir, path), self.work_dir, excludes):
                     diff['deleted'].append(path)
         return diff, current_files
 
@@ -414,13 +437,14 @@ class VersionControl:
         """删除工作目录中所有未被排除的文件，返回 (删除数量, 失败文件路径或None)"""
         deleted_count = 0
         dirs_to_check = []
+        excludes = self.get_excludes()
         for root, dirs, filenames in os.walk(self.work_dir, topdown=True):
             # Prune excluded directories
-            dirs[:] = [d for d in dirs if not self._is_excluded(os.path.join(root, d))]
+            dirs[:] = [d for d in dirs if not self._match_excludes(os.path.join(root, d), self.work_dir, excludes)]
             dirs_to_check.append(root)
             for filename in filenames:
                 full_path = os.path.join(root, filename)
-                if not self._is_excluded(full_path):
+                if not self._match_excludes(full_path, self.work_dir, excludes):
                     try:
                         os.remove(full_path)
                         deleted_count +=1
@@ -429,7 +453,7 @@ class VersionControl:
         # 倒序删除空文件夹
         for d in reversed(dirs_to_check):
             try:
-                if d != self.work_dir and not os.listdir(d) and not self._is_excluded(d):
+                if d != self.work_dir and not os.listdir(d) and not self._match_excludes(d, self.work_dir, excludes):
                     os.rmdir(d)
             except:
                 pass
