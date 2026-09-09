@@ -45,15 +45,20 @@
    cd kit-fvaa
    ```
 
-2. **安装必要的 Python 依赖库**:
-   建议在虚拟环境中运行，执行以下命令安装依赖：
+2. **安装 [uv](https://docs.astral.sh/uv/)**（尚未安装时）：
+   ```powershell
+   winget install astral-sh.uv
+   ```
+   无需手动安装 Python：uv 会在需要时自动下载项目要求的解释器（>=3.12）。
+
+3. **安装依赖**（依据 `pyproject.toml` 与 `uv.lock` 自动创建 `.venv` 虚拟环境并安装依赖）：
    ```bash
-   pip install ttkbootstrap markdown tkhtmlview
+   uv sync
    ```
 
-3. **运行程序**:
+4. **运行程序**:
    ```bash
-   python main.py
+   uv run python main.py
    ```
 
 ## 🧱 构建单文件 EXE（Windows）
