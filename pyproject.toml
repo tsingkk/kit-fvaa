@@ -8,3 +8,10 @@ dependencies = [
     "tkhtmlview>=0.3.2",
     "ttkbootstrap>=2.2.2",
 ]
+
+[dependency-groups]
+dev = [
+    "nuitka>=2.7",
+    "zstandard>=0.8",
+    "ordered-set>=4.1",
+]

@@ -56,6 +56,43 @@
    python main.py
    ```
 
+## 🧱 构建单文件 EXE（Windows）
+
+无需安装 Python 的目标机器可直接运行构建产物。项目使用 [Nuitka](https://nuitka.net/) 将程序编译为单一 EXE（含 Python 运行时与全部依赖）。
+
+**前置条件**（二者其一）：
+- MSVC C 编译器：`winget install Microsoft.VisualStudio.2022.BuildTools` 并勾选 “使用 C++ 的桌面开发” 工作负载；
+- 或 MinGW-w64 gcc。
+
+另需 [uv](https://docs.astral.sh/uv/)（`winget install astral-sh.uv`）管理构建环境。
+
+**构建**（自动执行 `uv sync` → 清理 `dist/` → 编译）：
+
+```powershell
+# 默认构建 standalone（目录版，先验证）+ onefile（单文件版）
+pwsh -File scripts\build_windows_onefile.ps1
+
+# 仅构建单文件版，并在完成后自动启动做冒烟验证
+pwsh -File scripts\build_windows_onefile.ps1 -Mode onefile -Verify
+
+# 仅构建 standalone 目录版（调试首选，启动快、可直接查看 dist\main.dist 内容）
+pwsh -File scripts\build_windows_onefile.ps1 -Mode standalone
+```
+
+**产物**：
+- `dist\kit-fvaa.exe` — 单文件版（onefile，约 16.6 MB，zstd 压缩）。首次启动需解压，有 1–2 秒延迟属正常现象；
+- `dist\main.dist\kit-fvaa.exe` — standalone 目录版（约 60 MB），用于排查问题；
+- `dist\nuitka-report-*.xml` — 编译报告，可用于核对打包内容。
+
+**运行注意**：与源码模式一致，程序启动后会在 EXE 同目录生成/读写 `fvaa_config.json`，请保留该文件。
+
+**清理**：直接删除 `dist/` 目录即可（构建脚本每次也会先自动清理）；所有构建产物均已加入 `.gitignore`。
+
+**常见问题**：
+- 报错 “No C compiler found” → 按上方前置条件安装编译器后重试；
+- 杀毒软件误报/隔离 EXE → Nuitka 编译产物偶被启发式误判，可将文件加入白名单；
+- 重复构建缓慢 → 首次全量编译较慢，之后命中 clcache 缓存通常只需数十秒。
+
 ## 📖 使用指南
 
 1. **选择工作目录**: 

@@ -40,6 +40,11 @@ release/
 fvaa_config.json
 test/
 
+# Nuitka 构建产物
+*.build/
+*.dist/
+*.onefile-build/
+
 # IDE相关
 .vscode/
 .idea/
