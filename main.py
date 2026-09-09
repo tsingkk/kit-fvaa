@@ -59,6 +59,12 @@ def _shade(hex_color, factor):
         r, g, b = (round(c * (1 + factor)) for c in (r, g, b))
     return f"#{r:02x}{g:02x}{b:02x}"
 
+def _mix(hex_color, bg_color, factor):
+    """按 factor 比例将颜色混入背景色：模拟半透明叠加（色相不变，饱和度与明度随背景降低）"""
+    c = [int(hex_color[i:i + 2], 16) for i in (1, 3, 5)]
+    t = [int(bg_color[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#" + "".join(f"{round(a + (b - a) * factor):02x}" for a, b in zip(c, t))
+
 def _font(size, bold=False):
     """统一界面字体（微软雅黑，pt 单位，随系统 DPI 缩放）"""
     return ("微软雅黑", size, "bold" if bold else "normal")
@@ -115,39 +121,39 @@ class VersionControlApp:
         self.ui_scale = max(1.0, self.root.winfo_fpixels("1i") / 96.0)
         self.root.geometry(f"{int(1600 * self.ui_scale)}x{int(850 * self.ui_scale)}")
         self.root.minsize(int(1200 * self.ui_scale), int(760 * self.ui_scale))
-        
+
         if "__compiled__" in globals():
             application_path = os.path.dirname(sys.argv[0])
         elif getattr(sys, 'frozen', False):
             application_path = os.path.dirname(sys.executable)
         else:
             application_path = os.path.dirname(os.path.abspath(__file__))
-            
+
         self.config_file = os.path.join(application_path, "fvaa_config.json")
         self.config = self.load_config()
         self.recent_dirs = self.config.get('recent_dirs', [])
         self.archive_desc = ""
-        
+
         # 应用全局深色主题样式
         self.build_styles()
-        
+
         self.vc = None
         self.work_dir = ""
         self.monitoring = False
         self.tag_edit_entry = None  # 版本历史“标签”列的原位输入框
-        
+
         # 标题
         header_frame = ttk.Frame(root)
         header_frame.pack(fill="x", pady=10)
         title_label = ttk.Label(header_frame, text="Kit文件存档助手", font=_font(20, True), foreground=PALETTE["title"])
         title_label.pack()
-        copyright_label = ttk.Label(header_frame, text="v1.1 by tsingkk@github under GPLv3 License", font=_font(11), foreground=PALETTE["text_dim"])
+        copyright_label = ttk.Label(header_frame, text="v1.2 by tsingkk@github under GPLv3 License", font=_font(11), foreground=PALETTE["text_dim"])
         copyright_label.place(relx=1.0, rely=0.5, anchor="e", x=-10)
-        
+
         # 工作目录选择 + 当前分支（同一行，右侧显示分支，形成清晰的状态信息区）
         dir_frame = ttk.Frame(root)
         dir_frame.pack(pady=5, fill="x", padx=10)
-        
+
         ttk.Label(dir_frame, text="工作目录:").pack(side="left", padx=5)
         self.dir_entry = ttk.Combobox(dir_frame, width=80, values=self.recent_dirs, font=_font(13))
         self.dir_entry.pack(side="left", padx=5, fill="x", expand=True)
@@ -156,29 +162,29 @@ class VersionControlApp:
         ttk.Button(dir_frame, text="选择目录", command=self.select_dir, style="FVAA.Blue.TButton").pack(side="left", padx=5)
         self.branch_label = ttk.Label(dir_frame, text="当前分支：-", font=_font(13, True), foreground=PALETTE["title"])
         self.branch_label.pack(side="right", padx=10)
-        
+
         # 操作按钮栏（统一按钮间距，避免“贴脸排列”）
         btn_frame = ttk.Frame(root)
         btn_frame.pack(pady=5, fill="x", padx=10)
-        
+
         self.refresh_btn = ttk.Button(btn_frame, text="刷新状态", command=self.refresh_status, style="FVAA.Blue.TButton")
         self.refresh_btn.pack(side="left", padx=6)
-        
+
         self.monitor_btn = ttk.Button(btn_frame, text="开始监视", command=self.toggle_monitor, style="FVAA.Teal.TButton")
         self.monitor_btn.pack(side="left", padx=6)
-        
+
         self.ignore_btn = ttk.Button(btn_frame, text="忽视文件", command=self.show_ignore_input, style="FVAA.Gray.TButton")
         self.ignore_btn.pack(side="left", padx=6)
-        
+
         self.desc_btn = ttk.Button(btn_frame, text="编辑存档说明", command=self.show_archive_input, style="FVAA.Purple.TButton")
         self.desc_btn.pack(side="left", padx=6)
-        
+
         self.archive_btn = ttk.Button(btn_frame, text="存档", command=self.create_archive, style="FVAA.Green.TButton")
         self.archive_btn.pack(side="left", padx=6)
-        
+
         self.restore_btn = ttk.Button(btn_frame, text="恢复版本", command=self.restore_version, style="FVAA.Orange.TButton")
         self.restore_btn.pack(side="left", padx=6)
-        
+
         self.branch_create_btn = ttk.Button(btn_frame, text="创建分支", command=self.create_branch, style="FVAA.Blue.TButton")
         self.branch_create_btn.pack(side="left", padx=6)
 
@@ -191,12 +197,12 @@ class VersionControlApp:
         self.minimize_to_tray_var = tk.BooleanVar(value=self.config.get('minimize_to_tray', False))
         self.tray_checkbox = ttk.Checkbutton(btn_frame, text="最小化至状态栏", variable=self.minimize_to_tray_var, bootstyle="info-round-toggle", command=self.save_config)
         self.tray_checkbox.pack(side="right", padx=10)
-        
+
         self.root.bind("<Unmap>", self.on_window_unmap)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close_app)
         self.tray_icon_created = False
 
-        
+
         # 消息提示区（消息靠左，状态摘要靠右）
         msg_frame = ttk.Frame(root)
         msg_frame.pack(pady=2, fill="x", padx=10)
@@ -204,15 +210,15 @@ class VersionControlApp:
         self.msg_label.pack(side="left")
         self.summary_label = ttk.Label(msg_frame, text="", font=_font(12), foreground=PALETTE["msg_neutral"])
         self.summary_label.pack(side="right")
-        
+
         # 分割面板
         paned = ttk.Panedwindow(root, orient="horizontal")
         paned.pack(pady=10, fill="both", expand=True, padx=10)
-        
+
         # 操作历史面板（加宽占比，避免长文本被截断）
         op_frame = ttk.Frame(paned)
         paned.add(op_frame, weight=4)
-        
+
         ttk.Label(op_frame, text="操作历史", font=_font(14, True), foreground=PALETTE["header_text"]).pack(pady=5, anchor="w", padx=6)
         op_inner_frame = ttk.Frame(op_frame)
         op_inner_frame.pack(fill="both", expand=True, padx=6, pady=(0, 6))
@@ -229,19 +235,20 @@ class VersionControlApp:
         op_xscroll.grid(row=1, column=0, sticky="ew")
         op_inner_frame.grid_rowconfigure(0, weight=1)
         op_inner_frame.grid_columnconfigure(0, weight=1)
-        # 按操作类型配置行底色（存档/恢复/切换与对应按钮同色，文字色随按钮）
-        for tag, (bg, fg) in (("archive", PALETTE["btn_green"]),
-                              ("restore", PALETTE["btn_orange"]),
-                              ("switch", PALETTE["btn_blue"])):
-            self.op_tree.tag_configure(tag, background=bg, foreground=fg)
+        # 按操作类型配置行底色（取对应按钮色向面板背景混合：降低饱和度、模拟透明叠加，色相不变；
+        # 底色变暗后深色文字对比不足，统一改用浅色文字保证可读）
+        for tag, bg in (("archive", PALETTE["btn_green"][0]),
+                        ("restore", PALETTE["btn_orange"][0]),
+                        ("switch", PALETTE["btn_blue"][0])):
+            self.op_tree.tag_configure(tag, background=_mix(bg, PALETTE["panel"], 0.4), foreground="#F0F0F0")
         self.op_tree.tag_configure("create", background=PALETTE["op_create"])
         # 悬停提示显示完整记录（配合加宽面板，彻底避免信息丢失）
         self.op_tooltip = ToolTip(self.op_tree, self._op_tip_text)
-        
+
         # 文件状态面板
         status_frame = ttk.Frame(paned)
         paned.add(status_frame, weight=5)
-        
+
         ttk.Label(status_frame, text="文件状态", font=_font(14, True), foreground=PALETTE["header_text"]).pack(pady=5, anchor="w", padx=6)
         status_inner_frame = ttk.Frame(status_frame)
         status_inner_frame.pack(fill="both", expand=True, padx=6, pady=(0, 6))
@@ -261,11 +268,11 @@ class VersionControlApp:
         status_xscroll.grid(row=1, column=0, sticky="ew")
         status_inner_frame.grid_rowconfigure(0, weight=1)
         status_inner_frame.grid_columnconfigure(0, weight=1)
-        
+
         # 版本历史面板
         version_frame = ttk.Frame(paned)
         paned.add(version_frame, weight=7)
-        
+
         ttk.Label(version_frame, text="版本历史", font=_font(14, True), foreground=PALETTE["header_text"]).pack(pady=5, anchor="w", padx=6)
         version_inner_frame = ttk.Frame(version_frame)
         version_inner_frame.pack(fill="both", expand=True, padx=6, pady=(0, 6))
@@ -294,14 +301,14 @@ class VersionControlApp:
         version_inner_frame.grid_rowconfigure(0, weight=1)
         version_inner_frame.grid_columnconfigure(0, weight=1)
         self.version_tree.bind('<ButtonRelease-1>', self.show_version_desc)
-        
+
         # “点击查看”类可交互单元格：悬停时行文字变为链接色 + 手型光标
         self._hover_item = None
         self._link_columns = ("#3", "#4", "#5")
         self.version_tree.tag_configure("linkhover", foreground=PALETTE["link"])
         self.version_tree.bind("<Motion>", self._on_version_motion)
         self.version_tree.bind("<Leave>", lambda e: self._clear_link_hover())
-        
+
         self.status_tags = {
             'modified': ('修改', PALETTE["st_modified"]),
             'added': ('新增', PALETTE["st_added"]),
@@ -310,7 +317,7 @@ class VersionControlApp:
         }
         for tag, (_, color) in self.status_tags.items():
             self.status_tree.tag_configure(tag, foreground=color)
-    
+
     def build_styles(self):
         """按 PALETTE 配置全局 ttk 样式（背景/表格/表头/按钮/滚动条/输入框）"""
         P = PALETTE
@@ -494,7 +501,7 @@ class VersionControlApp:
                 view.tag_configure(tag, foreground=PALETTE["text"])
             elif fg == "blue":
                 view.tag_configure(tag, foreground=PALETTE["link"])
-    
+
     STATUS_BLOCK_START = "<!-- FVAA文件状态清单 开始 -->"
     STATUS_BLOCK_END = "<!-- FVAA文件状态清单 结束 -->"
     # 分支历史图谱中各分支列的配色
@@ -559,7 +566,7 @@ class VersionControlApp:
         if archive_mode:
             win.transient(self.root)
             win.grab_set()
-         
+
         # 顶部提示语（警示条样式，字号与正文一致）
         hint_text = "上方只读显示当前目录的文件状态清单（每次打开自动更新），存档时将自动附加到存档说明顶部随版本保存；请在下方输入存档说明！"
         hint_label = tk.Label(win, text=hint_text, wraplength=int(560 * self.ui_scale), justify="left",
@@ -628,10 +635,10 @@ class VersionControlApp:
                 self._do_archive(tag_name)
             else:
                 self._set_message("存档说明已保存", "success")
-        
+
         def cancel():
             win.destroy()
-        
+
         def on_close():
             # 仅在点击右上角关闭(X)时提醒
             if archive_mode:
@@ -653,14 +660,14 @@ class VersionControlApp:
         if not self.vc:
             self._set_message("请先选择工作目录", "danger")
             return
-            
+
         win = Toplevel(self.root)
         win.title("编辑忽视文件规则")
         win.geometry(f"{int(500 * self.ui_scale)}x{int(600 * self.ui_scale)}")
         win.configure(background=PALETTE["bg"])
         win.transient(self.root)
         win.focus_set()
-        
+
         hint_label = tk.Label(win, text="请输入要忽视的文件或文件夹相对路径（每行一个）。\n支持类似 *.log 的通配符。这些文件将不再被监视、显示状态和存档。",
                               wraplength=int(450 * self.ui_scale), justify="left",
                               font=_font(12), background=PALETTE["hint_bg"], foreground=PALETTE["hint_text"],
@@ -669,9 +676,9 @@ class VersionControlApp:
 
         btn_frame = ttk.Frame(win)
         btn_frame.pack(fill="x", side="bottom", pady=15, padx=20)
-        
+
         ignore_file = os.path.join(self.work_dir, '.fvaa', '.fvaaignore')
-        
+
         def save_ignore():
             content = text.get("1.0", "end-1c")
             try:
@@ -682,7 +689,7 @@ class VersionControlApp:
             except Exception as e:
                 self._set_message(f"保存失败：{e}", "danger")
             win.destroy()
-        
+
         def cancel():
             win.destroy()
 
@@ -691,7 +698,7 @@ class VersionControlApp:
 
         text_frame = ttk.Frame(win)
         text_frame.pack(fill="both", expand=True, padx=20, pady=(5, 8))
-        
+
         text = Text(text_frame, wrap=tk.NONE, font=_font(12), undo=True,
                     background=PALETTE["panel"], foreground=PALETTE["text"],
                     insertbackground=PALETTE["text"], relief="flat", padx=8, pady=6,
@@ -700,7 +707,7 @@ class VersionControlApp:
         scroll_y = ttk.Scrollbar(text_frame, orient="vertical", command=text.yview, style="Custom.Vertical.TScrollbar")
         scroll_x = ttk.Scrollbar(text_frame, orient="horizontal", command=text.xview, style="Custom.Horizontal.TScrollbar")
         text.configure(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
-        
+
         existing_content = ""
         if os.path.exists(ignore_file):
             try:
@@ -709,13 +716,13 @@ class VersionControlApp:
             except:
                 pass
         text.insert("end", existing_content)
-        
+
         text.grid(row=0, column=0, sticky="nsew")
         scroll_y.grid(row=0, column=1, sticky="ns")
         scroll_x.grid(row=1, column=0, sticky="ew")
         text_frame.grid_rowconfigure(0, weight=1)
         text_frame.grid_columnconfigure(0, weight=1)
-    
+
     def show_version_desc(self, event):
         """点击版本查看说明或文件清单"""
         item = self.version_tree.identify_row(event.y)
@@ -733,13 +740,13 @@ class VersionControlApp:
             return
         version_data = self.version_tree.item(item)
         desc = self.version_tree.item(item, "tags")[0] if self.version_tree.item(item, "tags") else "无说明"
-        
+
         win = Toplevel(self.root)
         win.title(f"版本 {version_data['values'][0]} 存档说明")
         win.geometry(f"{int(600 * self.ui_scale)}x{int(400 * self.ui_scale)}")
         win.configure(background=PALETTE["bg"])
         win.resizable(True, True)
-        
+
         # 渲染markdown格式
         html = markdown.markdown(desc, extensions=['tables', 'fenced_code', 'nl2br'])
         html_view = HTMLLabel(win, html=html, background=PALETTE["panel"])
@@ -880,7 +887,7 @@ class VersionControlApp:
                 json.dump(config, f, ensure_ascii=False)
         except:
             pass
-            
+
     def add_recent_dir(self, d):
         d = os.path.abspath(d)
         if d in self.recent_dirs:
@@ -912,11 +919,11 @@ class VersionControlApp:
         self.refresh_status()
         self.refresh_versions()
         self.refresh_operation_log()
-        
+
         # 选择目录后默认自动开始监视
         if not self.monitoring:
             self.toggle_monitor()
-    
+
     def refresh_branch_label(self):
         """刷新第4行正中间的分支名称显示"""
         if self.vc:
@@ -943,36 +950,36 @@ class VersionControlApp:
                 tag = "switch"
             # 行首留白，避免文字紧贴行左边缘
             self.op_tree.insert("", "end", values=(f"  {log['time']}  {op}",), tags=(tag,))
-    
+
     def refresh_status(self):
         if not self.vc:
             return
         for item in self.status_tree.get_children():
             self.status_tree.delete(item)
-        
+
         diff, _ = self.vc.get_diff()
         total_changes = 0
         for status, paths in diff.items():
             total_changes += len(paths) if status != 'unchanged' else 0
             for path in paths:
                 self.status_tree.insert("", "end", values=(self.status_tags[status][0], path), tags=(status,))
-        
+
         self.summary_label.config(text=f"共 {total_changes} 个变更，{len(diff['unchanged'])} 个文件未变更")
-    
+
     def refresh_versions(self):
         if not self.vc:
             return
         self._destroy_tag_edit()
         for item in self.version_tree.get_children():
             self.version_tree.delete(item)
-        
+
         versions = self.vc.get_versions()
         for v in versions:
             tags = ','.join(v.get('tags', [])) or "添加标签"
             desc = v['description'] or "无说明"
             show_desc = "点击查看" if desc.strip() else "无说明"
             self.version_tree.insert("", "end", values=(v['version'], v['time'], show_desc, "点击查看", tags), tags=(desc,))
-    
+
     def create_archive(self):
         """存档：先弹出存档说明编辑窗口，点击弹窗中的“保存”后才执行存档"""
         if not self.vc:
@@ -1012,7 +1019,7 @@ class VersionControlApp:
             self._set_message(msg, "success" if success else "danger")
             self.refresh_status()
             self.refresh_operation_log()
-    
+
     def _destroy_tag_edit(self):
         """销毁版本历史“标签”列的原位输入框（幂等）"""
         if self.tag_edit_entry is not None:
@@ -1070,7 +1077,7 @@ class VersionControlApp:
         entry.bind("<Return>", confirm)
         entry.bind("<Escape>", cancel)
         entry.bind("<FocusOut>", cancel)
-    
+
     def create_branch(self):
         """创建分支：无变更文件时弹窗输入分支名称并创建（自动切换到新分支）"""
         if not self.vc:
@@ -1079,7 +1086,7 @@ class VersionControlApp:
         if self.vc.has_changes():
             messagebox.showwarning("创建分支", "创建新分支前需要先归档当前目录")
             return
-        
+
         win = Toplevel(self.root)
         win.title("创建新分支")
         win.geometry(f"{int(460 * self.ui_scale)}x{int(250 * self.ui_scale)}")
@@ -1092,22 +1099,22 @@ class VersionControlApp:
         # 底部按钮栏 (先pack side="bottom" 确保即使窗口缩小也始终可见)
         btn_frame = ttk.Frame(win)
         btn_frame.pack(side="bottom", pady=12)
-        
+
         hint_label = tk.Label(win, text="以当前分支最新归档为基线创建新分支，新分支版本号从 1 开始独立递增，\n创建后自动切换到新分支。",
                               wraplength=int(420 * self.ui_scale), justify="left",
                               font=_font(12), background=PALETTE["hint_bg"], foreground=PALETTE["hint_text"],
                               padx=12, pady=8)
         hint_label.pack(pady=(15, 8), padx=20)
-        
+
         entry_frame = ttk.Frame(win)
         entry_frame.pack(fill="x", padx=20, pady=(5, 8))
         ttk.Label(entry_frame, text="分支名称:").pack(side="left", padx=5)
         entry = ttk.Entry(entry_frame, width=30)
         entry.pack(side="left", fill="x", expand=True)
-        
+
         err_label = ttk.Label(win, text="", foreground=PALETTE["msg_danger"], wraplength=int(420 * self.ui_scale))
         err_label.pack(fill="x", padx=20)
-        
+
         def confirm(event=None):
             name = entry.get()
             ok, result = self.vc.validate_branch_name(name)
@@ -1124,15 +1131,15 @@ class VersionControlApp:
                 self.refresh_status()
             else:
                 err_label.config(text=msg)
-        
+
         def cancel():
             win.destroy()
-        
-        ttk.Button(btn_frame, text="创建", command=confirm, style="FVAA.Blue.TButton", width=10).pack(side="left", padx=10)
+
         ttk.Button(btn_frame, text="放弃", command=cancel, style="FVAA.Gray.TButton", width=10).pack(side="left", padx=10)
+        ttk.Button(btn_frame, text="创建", command=confirm, style="FVAA.Blue.TButton", width=10).pack(side="left", padx=10)
         entry.bind("<Return>", confirm)
         entry.focus_set()
-    
+
     def switch_branch(self):
         """切换分支：无变更文件时弹窗选择分支，切换后工作目录恢复为该分支最新归档"""
         if not self.vc:
@@ -1141,12 +1148,12 @@ class VersionControlApp:
         if self.vc.has_changes():
             messagebox.showwarning("切换分支", "切换分支前需要先归档当前目录")
             return
-        
+
         branches = self.vc.list_branches()
         if len(branches) <= 1:
             self._set_message("当前只有一个分支，无需切换", "neutral")
             return
-        
+
         win = Toplevel(self.root)
         win.title("切换分支")
         win.geometry(f"{int(560 * self.ui_scale)}x{int(500 * self.ui_scale)}")
@@ -1154,7 +1161,7 @@ class VersionControlApp:
         win.transient(self.root)
         win.grab_set()
         win.focus_set()
-        
+
         # 底部按钮栏 (先pack side="bottom" 确保即使窗口缩小也始终可见)
         btn_frame = ttk.Frame(win)
         btn_frame.pack(side="bottom", pady=12)
@@ -1164,7 +1171,7 @@ class VersionControlApp:
                               font=_font(12), background=PALETTE["hint_bg"], foreground=PALETTE["hint_text"],
                               padx=12, pady=8)
         hint_label.pack(pady=(15, 8), padx=20, anchor="w", side="top")
-        
+
         tree_frame = ttk.Frame(win)
         tree_frame.pack(fill="both", expand=True, padx=20, pady=(5, 8), side="top")
         tree = ttk.Treeview(tree_frame, columns=("name", "time"), show="headings", height=8)
@@ -1178,13 +1185,13 @@ class VersionControlApp:
         yscroll.grid(row=0, column=1, sticky="ns")
         tree_frame.grid_rowconfigure(0, weight=1)
         tree_frame.grid_columnconfigure(0, weight=1)
-        
+
         # iid 直接使用分支名，便于选中后取回
         for b in branches:
             display_name = b['name'] + ("（当前分支）" if b['is_current'] else "")
             time_text = b['last_archive_time'] or "尚未归档"
             tree.insert("", "end", iid=b['name'], values=(display_name, time_text))
-        
+
         def confirm():
             selected = tree.selection()
             if not selected:
@@ -1201,12 +1208,12 @@ class VersionControlApp:
                 self.refresh_status()
             else:
                 messagebox.showwarning("切换分支", msg, parent=win)
-        
+
         def cancel():
             win.destroy()
-        
-        ttk.Button(btn_frame, text="切换", command=confirm, style="FVAA.Blue.TButton", width=10).pack(side="left", padx=10)
+
         ttk.Button(btn_frame, text="取消", command=cancel, style="FVAA.Gray.TButton", width=10).pack(side="left", padx=10)
+        ttk.Button(btn_frame, text="切换", command=confirm, style="FVAA.Blue.TButton", width=10).pack(side="left", padx=10)
         tree.bind("<Double-1>", lambda event: confirm())
 
     def show_branch_history(self):
@@ -1413,12 +1420,12 @@ class VersionControlApp:
             view.pack(fill="both", expand=True, padx=20, pady=(0, 15))
         else:
             ttk.Label(win, text="无说明", foreground=PALETTE["text_dim"]).pack(anchor="w", padx=20)
-    
+
     def monitor_thread(self):
         while self.monitoring:
             self.root.after(0, self.refresh_status)
             time.sleep(2)
-    
+
     def toggle_monitor(self):
         if not self.vc:
             self._set_message("请先选择工作目录", "danger")
@@ -1473,19 +1480,19 @@ class VersionControlApp:
                 classAtom = win32gui.RegisterClass(wc)
             except:
                 classAtom = win32gui.GetModuleHandle(None) # Already registered or similar
-            
+
             style = win32con.WS_OVERLAPPED | win32con.WS_SYSMENU
             self.hwnd = win32gui.CreateWindow("KitFVAA_Tray", "KitFVAA_Tray", style, 0, 0, win32con.CW_USEDEFAULT, win32con.CW_USEDEFAULT, 0, 0, hinst, None)
             win32gui.UpdateWindow(self.hwnd)
-            
+
             hicon = win32gui.LoadIcon(0, win32con.IDI_APPLICATION)
             win32gui.Shell_NotifyIcon(win32gui.NIM_ADD, (self.hwnd, 0, win32gui.NIF_ICON | win32gui.NIF_MESSAGE | win32gui.NIF_TIP, win32con.WM_USER + 20, hicon, "Kit文件存档助手"))
             win32gui.PumpMessages()
-        
+
         threading.Thread(target=tray_loop, daemon=True).start()
 
     def show_tray_icon(self):
-        # The NIM_MODIFY is only needed if we want to change something, 
+        # The NIM_MODIFY is only needed if we want to change something,
         # but since we create it once and keep it, NIM_ADD in tray_loop is enough.
         # However, we can use NIM_MODIFY to ensure it's visible.
         try:
